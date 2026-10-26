@@ -84,6 +84,8 @@ void xfdesktop_backdrop_manager_cycle_backdrop(XfdesktopBackdropManager *manager
 void xfdesktop_backdrop_manager_monitor_changed(XfdesktopBackdropManager *manager,
                                                 XfwMonitor *monitor);
 
+char *xfdesktop_backdrop_manager_extension_prefix(XfdesktopBackdropManager *, XfwMonitor *, XfwWorkspace *);
+
 G_END_DECLS
 
 #endif

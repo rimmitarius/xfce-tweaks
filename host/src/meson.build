@@ -19,6 +19,7 @@ endforeach
 
 xfdesktop_sources = [
   'main.c',
+  'xfce-tweaks-host.c',
   'menu.c',
   'windowlist.c',
   'xfce-desktop.c',
@@ -87,12 +88,15 @@ executable(
   c_args: [
     '-DXFCEMODDIR="@0@/xfce4/modules"'.format(get_option('prefix') / get_option('libdir')),
     '-DG_LOG_DOMAIN="xfdesktop"',
+    '-DXT_MANAGER_PATH="@0@"'.format(get_option('prefix') / 'bin/xfce-tweaks-manager'),
+    '-DXT_MODULE_DIR="@0@"'.format(get_option('prefix') / get_option('libdir') / 'xfce-tweaks/modules'),
   ],
   include_directories: [
     include_directories('..'),
     include_directories('../common'),
   ],
   dependencies: [
+    dependency('gmodule-2.0'),
     gio_unix,
     gtk,
     libxfce4util,

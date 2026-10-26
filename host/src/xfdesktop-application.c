@@ -53,6 +53,7 @@
 #include "menu.h"
 #include "windowlist.h"
 #include "xfce-desktop.h"
+#include "xfce-tweaks-host.h"
 #include "xfdesktop-common.h"
 #include "xfdesktop-backdrop-manager.h"
 
@@ -1386,6 +1387,7 @@ do_menu_popup(XfdesktopApplication *app,
     menu = (*populate_func)(menu, gtk_widget_get_scale_factor(GTK_WIDGET(desktop)));
 
     if (menu != NULL) {
+        if(populate_from_icon_view)xt_desktop_menu(GTK_WIDGET(desktop),GTK_WIDGET(menu));
         gtk_menu_set_screen(menu, screen);
         gtk_menu_attach_to_widget(menu, menu_parent != NULL ? menu_parent : GTK_WIDGET(desktop), NULL);
         /* if the toplevel is the garcon menu, it loads items asynchronously; calling _show() forces

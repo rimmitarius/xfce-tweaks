@@ -1,0 +1,1114 @@
+diff --git a/host/meson_options.txt b/host/meson_options.txt
+index 3bc40b8..2077ebe 100644
+--- a/host/meson_options.txt
++++ b/host/meson_options.txt
+@@ -71,6 +71,6 @@ option(
+ option(
+   'video-backdrop',
+   type: 'boolean',
+-  value: true,
++  value: false,
+   description: 'Support for setting video as backdrop'
+ )
+diff --git a/host/src/meson.build b/host/src/meson.build
+index a9a2191..871acc7 100644
+--- a/host/src/meson.build
++++ b/host/src/meson.build
+@@ -19,6 +19,7 @@ endforeach
+ 
+ xfdesktop_sources = [
+   'main.c',
++  'xfce-tweaks-host.c',
+   'menu.c',
+   'windowlist.c',
+   'xfce-desktop.c',
+@@ -87,12 +88,15 @@ executable(
+   c_args: [
+     '-DXFCEMODDIR="@0@/xfce4/modules"'.format(get_option('prefix') / get_option('libdir')),
+     '-DG_LOG_DOMAIN="xfdesktop"',
++    '-DXT_MANAGER_PATH="@0@"'.format(get_option('prefix') / 'bin/xfce-tweaks-manager'),
++    '-DXT_MODULE_DIR="@0@"'.format(get_option('prefix') / get_option('libdir') / 'xfce-tweaks/modules'),
+   ],
+   include_directories: [
+     include_directories('..'),
+     include_directories('../common'),
+   ],
+   dependencies: [
++    dependency('gmodule-2.0'),
+     gio_unix,
+     gtk,
+     libxfce4util,
+diff --git a/host/src/xfce-desktop.c b/host/src/xfce-desktop.c
+index 3567e23..06e40b6 100644
+--- a/host/src/xfce-desktop.c
++++ b/host/src/xfce-desktop.c
+@@ -73,6 +73,7 @@
+ #include "xfdesktop-backdrop-media.h"
+ #include "xfdesktop-common.h"
+ #include "xfce-desktop.h"
++#include "xfce-tweaks-host.h"
+ 
+ #ifdef ENABLE_X11
+ #include "xfdesktop-x11.h"
+@@ -120,10 +121,10 @@ struct _XfceDesktop {
+ 
+     XfdesktopBackdropMedia *bmedia;
+ 
+-#ifdef ENABLE_VIDEO_BACKDROP
+     GtkWidget *overlay;
+     GtkWidget *overlay_child[N_XFCE_DESKTOP_LAYER];
+ 
++#ifdef ENABLE_VIDEO_BACKDROP
+     gboolean gst_initialized;
+     gboolean smart_pause_video;
+     GstElement *playbin;
+@@ -390,6 +391,16 @@ static void
+ fetch_backdrop(XfceDesktop *desktop, gboolean force_reload) {
+     TRACE("entering");
+     if (gtk_widget_get_realized(GTK_WIDGET(desktop)) && desktop->backdrop_workspace != NULL) {
++        char *prefix=xfdesktop_backdrop_manager_extension_prefix(desktop->backdrop_manager,desktop->monitor,desktop->backdrop_workspace);
++        char *key=g_strconcat(prefix,"/last-image",NULL);
++        char *filename=xfconf_channel_get_string(desktop->channel,key,NULL);
++        gboolean handled=xt_backdrop_changed(GTK_WIDGET(desktop),filename,prefix);
++        g_free(filename);g_free(key);g_free(prefix);
++        if(handled) {
++            if(desktop->backdrop_load_cancellable)g_cancellable_cancel(desktop->backdrop_load_cancellable);
++            return;
++        }
++
+         if (desktop->backdrop_load_cancellable != NULL) {
+             g_cancellable_cancel(desktop->backdrop_load_cancellable);
+             g_object_unref(desktop->backdrop_load_cancellable);
+@@ -659,10 +670,10 @@ xfce_desktop_constructed(GObject *obj)
+     workspace_manager = xfw_screen_get_workspace_manager(desktop->xfw_screen);
+     desktop->workspace_manager = workspace_manager;
+ 
+-#ifdef ENABLE_VIDEO_BACKDROP
+     desktop->overlay = gtk_overlay_new();
+     gtk_container_add(GTK_CONTAINER(desktop), desktop->overlay);
+-#endif /* ENABLE_VIDEO_BACKDROP */
++    gtk_widget_show(desktop->overlay);
++    xt_attach_desktop(GTK_WIDGET(desktop));
+ 
+     /* watch for workspace changes */
+     for (GList *gl = xfw_workspace_manager_list_workspace_groups(workspace_manager);
+@@ -1494,36 +1505,18 @@ xfce_desktop_cycle_backdrop(XfceDesktop *desktop) {
+     }
+ }
+ 
+-#ifdef ENABLE_VIDEO_BACKDROP
+ void
+ xfce_desktop_put_to_layer(XfceDesktop *desktop, XfceDesktopLayer n, GtkWidget *child) {
+-    g_return_if_fail(XFCE_IS_DESKTOP(desktop));
+-    g_return_if_fail(n >= 0 && n <= N_XFCE_DESKTOP_LAYER);
+-
+-    if (desktop->overlay_child[n] != NULL) {
+-        if (n == XFCE_DESKTOP_LAYER_BACKDROP) {
+-            /* Creating a video widget is very time consuming so we don't delete the widgets HERE,
+-             * instead they are deleted in XfdesktopBackdropMedia */
+-            gtk_widget_hide(desktop->overlay_child[n]);
+-        } else {
+-            gtk_container_remove(GTK_CONTAINER(desktop->overlay), desktop->overlay_child[n]);
+-        }
+-        gtk_widget_hide(desktop->overlay_child[n]);
+-        desktop->overlay_child[n] = NULL;
+-    }
+-
+-    if (child != NULL) {
+-        if (gtk_widget_get_parent(child) == NULL) {
+-            gtk_overlay_add_overlay(GTK_OVERLAY(desktop->overlay), child);
+-            if (n == XFCE_DESKTOP_LAYER_BACKDROP) {
+-                /* The background should not intercept events for icons */
+-                gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(desktop->overlay), child, TRUE);
+-            }
+-            gtk_overlay_reorder_overlay(GTK_OVERLAY(desktop->overlay), child, n);
+-        }
+-
+-        desktop->overlay_child[n] = child;
+-        gtk_widget_show(child);
++    g_return_if_fail(n >= 0 && n < N_XFCE_DESKTOP_LAYER);
++    GtkWidget *previous=desktop->overlay_child[n];
++    if(previous==child)return;
++    desktop->overlay_child[n]=NULL;
++    if(previous && gtk_widget_get_parent(previous)==desktop->overlay)
++        gtk_container_remove(GTK_CONTAINER(desktop->overlay),previous);
++    if(child) {
++        gtk_overlay_add_overlay(GTK_OVERLAY(desktop->overlay),child);
++        gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(desktop->overlay),child,n==XFCE_DESKTOP_LAYER_BACKDROP);
++        gtk_overlay_reorder_overlay(GTK_OVERLAY(desktop->overlay),child,n);
++        desktop->overlay_child[n]=child;gtk_widget_show(child);
+     }
+ }
+-#endif /* ENABLE_VIDEO_BACKDROP */
+diff --git a/host/src/xfce-desktop.h b/host/src/xfce-desktop.h
+index bb4a296..e6e0f3e 100644
+--- a/host/src/xfce-desktop.h
++++ b/host/src/xfce-desktop.h
+@@ -33,13 +33,11 @@ G_BEGIN_DECLS
+ #define XFCE_TYPE_DESKTOP (xfce_desktop_get_type())
+ G_DECLARE_FINAL_TYPE(XfceDesktop, xfce_desktop, XFCE, DESKTOP, GtkWindow)
+ 
+-#ifdef ENABLE_VIDEO_BACKDROP
+ typedef enum {
+     XFCE_DESKTOP_LAYER_BACKDROP,
+     XFCE_DESKTOP_LAYER_ICONS,
+     N_XFCE_DESKTOP_LAYER
+ } XfceDesktopLayer;
+-#endif /* ENABLE_VIDEO_BACKDROP */
+ 
+ typedef void (*SessionLogoutFunc)();
+ 
+@@ -63,11 +61,9 @@ void xfce_desktop_cycle_backdrop(XfceDesktop *desktop);
+ 
+ void xfce_desktop_arrange_icons(XfceDesktop *desktop);
+ 
+-#ifdef ENABLE_VIDEO_BACKDROP
+ void xfce_desktop_put_to_layer(XfceDesktop *desktop,
+                                XfceDesktopLayer layer,
+                                GtkWidget *child);
+-#endif /* ENABLE_VIDEO_BACKDROP */
+ 
+ G_END_DECLS
+ 
+diff --git a/host/src/xfce-tweaks-host.c b/host/src/xfce-tweaks-host.c
+new file mode 100644
+index 0000000..7f07f7f
+--- /dev/null
++++ b/host/src/xfce-tweaks-host.c
+@@ -0,0 +1,286 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#include "xfce-tweaks-host.h"
++#include "xfce-desktop.h"
++#include <string.h>
++#ifndef XT_MODULE_DIR
++#define XT_MODULE_DIR "/usr/local/lib/xfce-tweaks/modules"
++#endif
++
++typedef struct {
++  char *id, *library;
++  const XtTweak *api;
++  GModule *module;
++  gboolean enabled, default_enabled;
++} Entry;
++static GPtrArray *entries;
++static GList *views, *desktops;
++static XfconfChannel *channel;
++static void update(Entry *e, gboolean enabled);
++static void scan(const char *root);
++static void status(Entry *e, const char *text) {
++  char *p = g_strdup_printf("/xfce-tweaks/status/%s", e->id);
++  xfconf_channel_set_string(channel, p, text);
++  g_free(p);
++}
++static void changed(XfconfChannel *c, const char *property, const GValue *value,
++                    gpointer data) {
++  if (!strcmp(property, "/xfce-tweaks/rescan")) {
++    char *user =
++        g_build_filename(g_get_user_data_dir(), "xfce-tweaks", "modules", NULL);
++    scan(user);
++    g_free(user);
++    for (guint i = 0; i < entries->len; i++) {
++      Entry *e = g_ptr_array_index(entries, i);
++      char *p = g_strdup_printf("/xfce-tweaks/enabled/%s", e->id);
++      update(e, xfconf_channel_get_bool(c, p, e->default_enabled));
++      g_free(p);
++    }
++    return;
++  }
++  if (!g_str_has_prefix(property, "/xfce-tweaks/enabled/"))
++    return;
++  const char *id = property + strlen("/xfce-tweaks/enabled/");
++  for (guint i = 0; i < entries->len; i++) {
++    Entry *e = g_ptr_array_index(entries, i);
++    if (!strcmp(e->id, id))
++      update(e, xfconf_channel_get_bool(c, property, e->default_enabled));
++  }
++}
++static void scan(const char *root) {
++  GDir *dir = g_dir_open(root, 0, NULL);
++  if (!dir)
++    return;
++  const char *name;
++  while ((name = g_dir_read_name(dir))) {
++    if (name[0] == '.')
++      continue;
++    char *path = g_build_filename(root, name, "tweak.ini", NULL);
++    GKeyFile *k = g_key_file_new();
++    if (g_key_file_load_from_file(k, path, 0, NULL)) {
++      char *id = g_key_file_get_string(k, "Tweak", "Id", NULL);
++      char *lib = g_key_file_get_string(k, "Tweak", "Library", NULL);
++      int abi = g_key_file_get_integer(k, "Tweak", "ABI", NULL);
++      gboolean duplicate = FALSE;
++      for (guint i = 0; i < entries->len; i++)
++        if (!g_strcmp0(((Entry *)g_ptr_array_index(entries, i))->id, id))
++          duplicate = TRUE;
++      if (id && lib && abi == XT_ABI_VERSION &&
++          g_regex_match_simple("^[a-z][a-z0-9-]{0,63}$", id, 0, 0) &&
++          !strchr(lib, '/') && g_str_has_suffix(lib, ".so") && !duplicate) {
++        Entry *e = g_new0(Entry, 1);
++        e->id = g_strdup(id);
++        e->library = g_build_filename(root, name, lib, NULL);
++        e->default_enabled =
++            g_key_file_get_boolean(k, "Tweak", "DefaultEnabled", NULL);
++        g_ptr_array_add(entries, e);
++      }
++      g_free(id);
++      g_free(lib);
++    }
++    g_key_file_unref(k);
++    g_free(path);
++  }
++  g_dir_close(dir);
++}
++static void init(void) {
++  if (entries)
++    return;
++  entries = g_ptr_array_new();
++  channel = xfconf_channel_get("xfce4-desktop");
++  /* Presence is scoped to this session bus, never inferred from stale settings. */
++  g_bus_own_name(G_BUS_TYPE_SESSION, "org.xfce.Tweaks", G_BUS_NAME_OWNER_FLAGS_NONE,
++                 NULL, NULL, NULL, NULL, NULL);
++  char *user =
++      g_build_filename(g_get_user_data_dir(), "xfce-tweaks", "modules", NULL);
++  scan(user);
++  g_free(user);
++  const char *override = g_getenv("XFCE_TWEAKS_MODULE_PATH");
++  if (override) {
++    char **dirs = g_strsplit(override, G_SEARCHPATH_SEPARATOR_S, -1);
++    for (guint i = 0; dirs[i]; i++)
++      scan(dirs[i]);
++    g_strfreev(dirs);
++  }
++  scan(XT_MODULE_DIR);
++  g_signal_connect(channel, "property-changed", G_CALLBACK(changed), NULL);
++  for (guint i = 0; i < entries->len; i++) {
++    Entry *e = g_ptr_array_index(entries, i);
++    char *p = g_strdup_printf("/xfce-tweaks/enabled/%s", e->id);
++    update(e, xfconf_channel_get_bool(channel, p, e->default_enabled));
++    g_free(p);
++  }
++}
++static gboolean load(Entry *e) {
++  if (e->api)
++    return TRUE;
++  e->module = g_module_open(e->library, G_MODULE_BIND_LOCAL);
++  if (!e->module) {
++    g_warning("Tweak %s: %s", e->id, g_module_error());
++    status(e, "load-error");
++    return FALSE;
++  }
++  XtQuery query = NULL;
++  if (!g_module_symbol(e->module, "xfce_tweak_query", (gpointer *)&query))
++    goto bad;
++  const XtTweak *api = query(xt_icon_host_api());
++  if (!api || api->abi_version != XT_ABI_VERSION ||
++      api->struct_size < sizeof(XtTweak) || g_strcmp0(api->id, e->id))
++    goto bad;
++  e->api = api;
++  g_module_make_resident(e->module);
++  return TRUE;
++bad:
++  g_warning("Tweak %s has an incompatible ABI or identity", e->id);
++  status(e, "incompatible");
++  g_module_close(e->module);
++  e->module = NULL;
++  return FALSE;
++}
++static void update(Entry *e, gboolean enabled) {
++  if (e->enabled == enabled) {
++    status(e, enabled ? "active" : "disabled");
++    return;
++  }
++  if (enabled && !load(e))
++    return;
++  if (enabled)
++    for (guint i = 0; i < entries->len; i++) {
++      Entry *other = g_ptr_array_index(entries, i);
++      if (other != e && other->enabled &&
++          (other->api->capabilities & e->api->capabilities &
++           (XT_CAP_ICON_LAYOUT | XT_CAP_BACKDROP_PROVIDER))) {
++        char *message = g_strdup_printf("conflict: %s", other->id);
++        status(e, message);
++        g_free(message);
++        return;
++      }
++    }
++  e->enabled = enabled;
++  for (GList *l = views; l; l = l->next) {
++    GtkWidget *v = l->data;
++    if (enabled) {
++      if (e->api->attach_view)
++        e->api->attach_view(v, g_object_get_data(G_OBJECT(v), "xt-monitor"));
++    } else {
++      if (e->api->detach_view)
++        e->api->detach_view(v);
++      if (e->api->capabilities & XT_CAP_ICON_LAYOUT)
++        xt_reset_icon_layout(v);
++    }
++    gtk_widget_queue_draw(v);
++  }
++  for (GList *l = desktops; l; l = l->next) {
++    GtkWidget *d = l->data;
++    if (enabled) {
++      if (e->api->attach_desktop)
++        e->api->attach_desktop(d);
++    } else if (e->api->detach_desktop)
++      e->api->detach_desktop(d);
++    if (gtk_widget_get_realized(d))
++      xfce_desktop_refresh(XFCE_DESKTOP(d));
++  }
++  status(e, enabled ? "active" : "disabled");
++}
++static void view_gone(gpointer data, GObject *object) {
++  views = g_list_remove(views, object);
++}
++static void desktop_gone(gpointer data, GObject *object) {
++  desktops = g_list_remove(desktops, object);
++}
++static void desktop_destroyed(GtkWidget *d, gpointer data) {
++  for (guint i = 0; i < entries->len; i++) {
++    Entry *e = g_ptr_array_index(entries, i);
++    if (e->enabled && e->api->detach_desktop)
++      e->api->detach_desktop(d);
++  }
++  desktops = g_list_remove(desktops, d);
++}
++void xt_attach_view(GtkWidget *v, const char *monitor) {
++  init();
++  if (g_list_find(views, v))
++    return;
++  views = g_list_prepend(views, v);
++  g_object_weak_ref(G_OBJECT(v), view_gone, NULL);
++  g_object_set_data_full(G_OBJECT(v), "xt-monitor", g_strdup(monitor), g_free);
++  for (guint i = 0; i < entries->len; i++) {
++    Entry *e = g_ptr_array_index(entries, i);
++    if (e->enabled && e->api->attach_view)
++      e->api->attach_view(v, monitor);
++  }
++}
++void xt_attach_desktop(GtkWidget *d) {
++  init();
++  if (g_list_find(desktops, d))
++    return;
++  g_signal_connect(d, "destroy", G_CALLBACK(desktop_destroyed), NULL);
++  desktops = g_list_prepend(desktops, d);
++  g_object_weak_ref(G_OBJECT(d), desktop_gone, NULL);
++  for (guint i = 0; i < entries->len; i++) {
++    Entry *e = g_ptr_array_index(entries, i);
++    if (e->enabled && e->api->attach_desktop)
++      e->api->attach_desktop(d);
++  }
++}
++#define EACH(member, call)                                                     \
++  do {                                                                         \
++    init();                                                                    \
++    for (guint n = 0; n < entries->len; n++) {                                 \
++      Entry *e = g_ptr_array_index(entries, n);                                \
++      if (e->enabled && e->api->member)                                        \
++        e->api->member call;                                                   \
++    }                                                                          \
++  } while (0)
++#define FIRST(member, call)                                                    \
++  do {                                                                         \
++    init();                                                                    \
++    for (guint n = 0; n < entries->len; n++) {                                 \
++      Entry *e = g_ptr_array_index(entries, n);                                \
++      if (e->enabled && e->api->member && e->api->member call)                 \
++        return TRUE;                                                           \
++    }                                                                          \
++    return FALSE;                                                              \
++  } while (0)
++void xt_view_menu(GtkWidget *v, GtkWidget *m, int x, int y) {
++  EACH(view_menu, (v, m, x, y));
++}
++void xt_file_renamed(GFile *a, GFile *b) { EACH(file_renamed, (a, b)); }
++void xt_draw(GtkWidget *v, cairo_t *c) { EACH(draw, (v, c)); }
++gboolean xt_coords_to_slot(GtkWidget *v, int x, int y, int *r, int *c) {
++  FIRST(coords_to_slot, (v, x, y, r, c));
++}
++gboolean xt_press(GtkWidget *v, GdkEventButton *b) {
++  FIRST(button_press, (v, b));
++}
++gboolean xt_release(GtkWidget *v, GdkEventButton *b) {
++  FIRST(button_release, (v, b));
++}
++gboolean xt_motion(GtkWidget *v, GdkEventMotion *b) { FIRST(motion, (v, b)); }
++void xt_leave(GtkWidget *v) { EACH(leave, (v)); }
++void xt_band_menu(GtkWidget *v, GdkEventButton *b, gboolean w) {
++  EACH(band_complete, (v, b, w));
++}
++void xt_dropped(GtkWidget *v, GtkWidget *s, gpointer i, int x, int y) {
++  EACH(icon_dropped, (v, s, i, x, y));
++}
++gboolean xt_backdrop_changed(GtkWidget *d, const char *f, const char *p) {
++  FIRST(backdrop_changed, (d, f, p));
++}
++static void open_manager(GtkMenuItem *item, gpointer data) {
++  char *argv[] = {XT_MANAGER_PATH, NULL};
++  GError *error = NULL;
++  if (!g_spawn_async(NULL, argv, NULL, G_SPAWN_DEFAULT, NULL, NULL, NULL,
++                     &error)) {
++    g_warning("Cannot launch XFCE Tweaks: %s", error->message);
++    g_clear_error(&error);
++  }
++}
++void xt_desktop_menu(GtkWidget *d, GtkWidget *m) {
++  EACH(desktop_menu, (d, m));
++  GtkWidget *item = gtk_menu_item_new_with_label("XFCE Tweaks…");
++  g_signal_connect(item, "activate", G_CALLBACK(open_manager), NULL);
++  gtk_menu_shell_insert(GTK_MENU_SHELL(m), item, 1);
++  gtk_widget_show(item);
++}
++void xt_host_set_backdrop(GtkWidget *d, GtkWidget *w) {
++  xfce_desktop_put_to_layer(XFCE_DESKTOP(d), XFCE_DESKTOP_LAYER_BACKDROP, w);
++}
+diff --git a/host/src/xfce-tweaks-host.h b/host/src/xfce-tweaks-host.h
+new file mode 100644
+index 0000000..77e53e4
+--- /dev/null
++++ b/host/src/xfce-tweaks-host.h
+@@ -0,0 +1,20 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#pragma once
++#include "../../sdk/xfce-tweaks.h"
++void xt_attach_view(GtkWidget *, const char *);
++void xt_view_menu(GtkWidget *, GtkWidget *, int, int);
++void xt_file_renamed(GFile *, GFile *);
++void xt_draw(GtkWidget *, cairo_t *);
++gboolean xt_coords_to_slot(GtkWidget *, int, int, int *, int *);
++gboolean xt_press(GtkWidget *, GdkEventButton *);
++gboolean xt_release(GtkWidget *, GdkEventButton *);
++gboolean xt_motion(GtkWidget *, GdkEventMotion *);
++void xt_leave(GtkWidget *);
++void xt_band_menu(GtkWidget *, GdkEventButton *, gboolean);
++void xt_dropped(GtkWidget *, GtkWidget *, gpointer, int, int);
++void xt_attach_desktop(GtkWidget *);
++gboolean xt_backdrop_changed(GtkWidget *, const char *, const char *);
++void xt_desktop_menu(GtkWidget *, GtkWidget *);
++const XtHost *xt_icon_host_api(void);
++void xt_reset_icon_layout(GtkWidget *);
++void xt_host_set_backdrop(GtkWidget *, GtkWidget *);
+diff --git a/host/src/xfce-tweaks-icon-adapter.inc b/host/src/xfce-tweaks-icon-adapter.inc
+new file mode 100644
+index 0000000..0d566a6
+--- /dev/null
++++ b/host/src/xfce-tweaks-icon-adapter.inc
+@@ -0,0 +1,136 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later
++ * The only bridge allowed to access native icon-view private structures.
++ */
++#include "xfdesktop-file-icon-model-filter.h"
++#include "xfdesktop-icon.h"
++static const XtViewState *xt_view_snapshot(GtkWidget *widget) {
++  XfdesktopIconView *v = XFDESKTOP_ICON_VIEW(widget);
++  XtViewState *s = g_object_get_data(G_OBJECT(v), "xt-view-snapshot");
++  if (!s) {
++    s = g_new0(XtViewState, 1);
++    g_object_set_data_full(G_OBJECT(v), "xt-view-snapshot", s, g_free);
++  }
++  XfdesktopIconView *icon_view = v;
++  *s = (XtViewState){.items = v->items,
++                     .selected_items = v->selected_items,
++                     .grid_layout = v->grid_layout != NULL,
++                     .model = v->model != NULL,
++                     .definitely_rubber_banding = v->definitely_rubber_banding,
++                     .nrows = v->nrows,
++                     .ncols = v->ncols,
++                     .xspacing = v->xspacing,
++                     .yspacing = v->yspacing,
++                     .xmargin = v->xmargin,
++                     .ymargin = v->ymargin,
++                     .slot_padding = v->slot_padding,
++                     .icon_size = v->icon_size,
++                     .slot_size = SLOT_SIZE,
++                     .label_fg_color_set = v->label_fg_color_set,
++                     .label_fg_color = v->label_fg_color,
++                     .band_rect = v->band_rect};
++  return s;
++}
++static const XtIconState *xt_icon_snapshot(gpointer handle) {
++  ViewItem *i = handle;
++  i->extension_snapshot =
++      (XtIconState){.row = i->row,
++                    .col = i->col,
++                    .placed = i->placed,
++                    .positioned = i->extension_positioned,
++                    .icon_slot_region = i->icon_slot_region};
++  return &i->extension_snapshot;
++}
++static const char *xt_icon_identifier(GtkWidget *widget, gpointer handle) {
++  XfdesktopIconView *v = XFDESKTOP_ICON_VIEW(widget);
++  GtkTreeIter iter;
++  if (!v->model || !XFDESKTOP_IS_FILE_ICON_MODEL_FILTER(v->model) ||
++      !view_item_get_iter(handle, v->model, &iter))
++    return NULL;
++  XfdesktopFileIcon *icon = xfdesktop_file_icon_model_filter_get_icon(
++      XFDESKTOP_FILE_ICON_MODEL_FILTER(v->model), &iter);
++  return icon ? xfdesktop_icon_peek_identifier(XFDESKTOP_ICON(icon)) : NULL;
++}
++static void xt_icon_origin(gpointer handle, double x, double y) {
++  ViewItem *i = handle;
++  i->extension_positioned = TRUE;
++  i->extension_x = x;
++  i->extension_y = y;
++}
++static gboolean xt_slot_occupied(GtkWidget *v, int r, int c) {
++  return xfdesktop_icon_view_item_in_slot(XFDESKTOP_ICON_VIEW(v), r, c) != NULL;
++}
++static gboolean xt_place_icon(GtkWidget *v, gpointer i, int r, int c) {
++  return xfdesktop_icon_view_place_item_at(XFDESKTOP_ICON_VIEW(v), i, r, c);
++}
++static void xt_unplace_icon(GtkWidget *v, gpointer i) {
++  xfdesktop_icon_view_unplace_item(XFDESKTOP_ICON_VIEW(v), i);
++}
++static void xt_place_default(GtkWidget *v, gpointer i) {
++  xfdesktop_icon_view_place_item(XFDESKTOP_ICON_VIEW(v), i, FALSE);
++}
++static void xt_transfer_icon(GtkWidget *source, GtkWidget *dest,
++                             gpointer item) {
++  XfdesktopIconView *s = XFDESKTOP_ICON_VIEW(source);
++  GtkTreeIter iter;
++  if (s->model && view_item_get_iter(item, s->model, &iter))
++    g_signal_emit(dest, __signals[SIG_ICON_MOVED], 0, source, &iter, -1, -1);
++}
++static gboolean xt_is_icon_drag(GtkWidget *v, GdkDragContext *context) {
++  return gtk_drag_dest_find_target(v, context,
++                                   XFDESKTOP_ICON_VIEW(v)->dest_targets) ==
++         gdk_atom_intern_static_string(XFDESKTOP_ICON_NAME);
++}
++static GPtrArray *xt_decode_drop(GtkSelectionData *data, guint info) {
++  if (info != TARGET_XFDESKTOP_ICON ||
++      gtk_selection_data_get_length(data) !=
++          (int)sizeof(XfdesktopDraggedIconList))
++    return NULL;
++  XfdesktopDraggedIconList *native =
++      (gpointer)gtk_selection_data_get_data(data);
++  GPtrArray *result = g_ptr_array_new_with_free_func(g_free);
++  for (GList *l = native->dragged_icons; l; l = l->next) {
++    XfdesktopDraggedIcon *i = l->data;
++    XtDrop *d = g_new0(XtDrop, 1);
++    d->source = GTK_WIDGET(native->source_icon_view);
++    d->item = i->item;
++    g_ptr_array_add(result, d);
++  }
++  return result;
++}
++static void xt_drag_pending(GtkWidget *v, gboolean b) {
++  XFDESKTOP_ICON_VIEW(v)->drag_dropped = b;
++}
++static XfconfChannel *xt_settings(void) {
++  return xfconf_channel_get("xfce4-desktop");
++}
++const XtHost *xt_icon_host_api(void) {
++  static const XtHost api = {.abi_version = XT_ABI_VERSION,
++                             .struct_size = sizeof(XtHost),
++                             .view_state = xt_view_snapshot,
++                             .icon_state = xt_icon_snapshot,
++                             .icon_id = xt_icon_identifier,
++                             .set_icon_origin = xt_icon_origin,
++                             .slot_occupied = xt_slot_occupied,
++                             .place_icon = xt_place_icon,
++                             .unplace_icon = xt_unplace_icon,
++                             .place_icon_default = xt_place_default,
++                             .transfer_icon = xt_transfer_icon,
++                             .is_icon_drag = xt_is_icon_drag,
++                             .decode_icon_drop = xt_decode_drop,
++                             .set_drag_pending = xt_drag_pending,
++                             .set_backdrop_widget = xt_host_set_backdrop,
++                             .settings = xt_settings};
++  return &api;
++}
++void xt_reset_icon_layout(GtkWidget *widget) {
++  XfdesktopIconView *v = XFDESKTOP_ICON_VIEW(widget);
++  for (GList *l = v->items; l; l = l->next) {
++    ViewItem *i = l->data;
++    if (i->placed)
++      xfdesktop_icon_view_unplace_item(v, i);
++    i->extension_positioned = FALSE;
++  }
++  for (GList *l = v->items; l; l = l->next)
++    xfdesktop_icon_view_place_item(v, l->data, FALSE);
++  gtk_widget_queue_draw(widget);
++}
+diff --git a/host/src/xfdesktop-application.c b/host/src/xfdesktop-application.c
+index 13a20a5..d438356 100644
+--- a/host/src/xfdesktop-application.c
++++ b/host/src/xfdesktop-application.c
+@@ -53,6 +53,7 @@
+ #include "menu.h"
+ #include "windowlist.h"
+ #include "xfce-desktop.h"
++#include "xfce-tweaks-host.h"
+ #include "xfdesktop-common.h"
+ #include "xfdesktop-backdrop-manager.h"
+ 
+@@ -1386,6 +1387,7 @@ do_menu_popup(XfdesktopApplication *app,
+     menu = (*populate_func)(menu, gtk_widget_get_scale_factor(GTK_WIDGET(desktop)));
+ 
+     if (menu != NULL) {
++        if(populate_from_icon_view)xt_desktop_menu(GTK_WIDGET(desktop),GTK_WIDGET(menu));
+         gtk_menu_set_screen(menu, screen);
+         gtk_menu_attach_to_widget(menu, menu_parent != NULL ? menu_parent : GTK_WIDGET(desktop), NULL);
+         /* if the toplevel is the garcon menu, it loads items asynchronously; calling _show() forces
+diff --git a/host/src/xfdesktop-backdrop-manager.c b/host/src/xfdesktop-backdrop-manager.c
+index 72658fa..9bfcc2d 100644
+--- a/host/src/xfdesktop-backdrop-manager.c
++++ b/host/src/xfdesktop-backdrop-manager.c
+@@ -981,3 +981,8 @@ xfdesktop_backdrop_manager_monitor_changed(XfdesktopBackdropManager *manager, Xf
+     g_hash_table_foreach(manager->backdrops, backdrops_ht_invalidate, &bifd);
+     g_free(bifd.property_prefix_prefix);
+ }
++
++/* Resolve extension backdrop requests through the native monitor/workspace rules. */
++char *xfdesktop_backdrop_manager_extension_prefix(XfdesktopBackdropManager *m, XfwMonitor *monitor, XfwWorkspace *workspace) {
++ return build_property_prefix(m,monitor,workspace,NULL,NULL);
++}
+diff --git a/host/src/xfdesktop-backdrop-manager.h b/host/src/xfdesktop-backdrop-manager.h
+index f874a45..f9eb912 100644
+--- a/host/src/xfdesktop-backdrop-manager.h
++++ b/host/src/xfdesktop-backdrop-manager.h
+@@ -84,6 +84,8 @@ void xfdesktop_backdrop_manager_cycle_backdrop(XfdesktopBackdropManager *manager
+ void xfdesktop_backdrop_manager_monitor_changed(XfdesktopBackdropManager *manager,
+                                                 XfwMonitor *monitor);
+ 
++char *xfdesktop_backdrop_manager_extension_prefix(XfdesktopBackdropManager *, XfwMonitor *, XfwWorkspace *);
++
+ G_END_DECLS
+ 
+ #endif
+diff --git a/host/src/xfdesktop-file-icon-manager.c b/host/src/xfdesktop-file-icon-manager.c
+index 777665a..30ec817 100644
+--- a/host/src/xfdesktop-file-icon-manager.c
++++ b/host/src/xfdesktop-file-icon-manager.c
+@@ -62,6 +62,7 @@
+ #include "xfdesktop-common.h"
+ #include "xfdesktop-file-icon.h"
+ #include "xfdesktop-file-icon-manager.h"
++#include "xfce-tweaks-host.h"
+ #include "xfdesktop-file-icon-model.h"
+ #include "xfdesktop-file-icon-model-filter.h"
+ #include "xfdesktop-file-utils.h"
+@@ -1414,6 +1415,7 @@ finish_create_icon_view(XfdesktopFileIconManager *fmanager, XfceDesktop *desktop
+                                                 "row-column", XFDESKTOP_ICON_VIEW_MODEL_COLUMN_ROW,
+                                                 "col-column", XFDESKTOP_ICON_VIEW_MODEL_COLUMN_COL,
+                                                 NULL);
++    xt_attach_view(GTK_WIDGET(icon_view), xfw_monitor_get_identifier(xfce_desktop_get_monitor(desktop)));
+     xfdesktop_icon_view_set_selection_mode(icon_view, GTK_SELECTION_MULTIPLE);
+     xfdesktop_icon_view_enable_drag_source(icon_view,
+                                            GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_BUTTON1_MASK,
+@@ -2199,6 +2201,8 @@ xfdesktop_file_icon_manager_get_context_menu(XfdesktopIconViewManager *manager,
+         }
+     }
+ 
++    xt_view_menu(GTK_WIDGET(icon_view), menu, popup_x, popup_y);
++
+     /* don't free |selected|.  the menu deactivated handler does that */
+ 
+     *menu_parent = xfdesktop_icon_view_holder_get_menu_parent(mdata->holder);
+diff --git a/host/src/xfdesktop-file-icon-model.c b/host/src/xfdesktop-file-icon-model.c
+index 41557de..b5e03bf 100644
+--- a/host/src/xfdesktop-file-icon-model.c
++++ b/host/src/xfdesktop-file-icon-model.c
+@@ -25,6 +25,7 @@
+ #include "xfdesktop-common.h"
+ #include "xfdesktop-extensions.h"
+ #include "xfdesktop-file-icon-model.h"
++#include "xfce-tweaks-host.h"
+ #include "xfdesktop-file-icon.h"
+ #include "xfdesktop-icon.h"
+ #include "xfdesktop-icon-view-model.h"
+@@ -907,6 +908,11 @@ file_monitor_changed(GFileMonitor *monitor,
+                 }
+                 XF_DEBUG("row %d, col %d", row, col);
+ 
++                if(other_file != NULL) {
++                    GFile *parent=g_file_get_parent(other_file);
++                    if(parent && g_file_equal(parent,fmodel->folder))xt_file_renamed(file,other_file);
++                    g_clear_object(&parent);
++                }
+                 /* Remove the old icon */
+                 remove_icon(fmodel, icon);
+             }
+diff --git a/host/src/xfdesktop-icon-view-holder.c b/host/src/xfdesktop-icon-view-holder.c
+index b99b3dc..017c366 100644
+--- a/host/src/xfdesktop-icon-view-holder.c
++++ b/host/src/xfdesktop-icon-view-holder.c
+@@ -120,12 +120,7 @@ static void
+ init_for_x11(XfdesktopIconViewHolder *holder) {
+     holder->container = gtk_fixed_new();
+ 
+-#ifdef ENABLE_VIDEO_BACKDROP
+     xfce_desktop_put_to_layer(holder->desktop, XFCE_DESKTOP_LAYER_ICONS, holder->container);
+-#else
+-    gtk_container_add(GTK_CONTAINER(holder->desktop), holder->container);
+-    gtk_widget_show(holder->container);
+-#endif /* ENABLE_VIDEO_BACKDROP */
+ 
+     gtk_container_add(GTK_CONTAINER(holder->container), GTK_WIDGET(holder->icon_view));
+     update_x11_icon_view_geometry(holder);
+diff --git a/host/src/xfdesktop-icon-view.c b/host/src/xfdesktop-icon-view.c
+index 35f5a15..437343f 100644
+--- a/host/src/xfdesktop-icon-view.c
++++ b/host/src/xfdesktop-icon-view.c
+@@ -46,6 +46,7 @@
+ #include "xfdesktop-common.h"
+ #include "xfdesktop-icon-view.h"
+ #include "xfdesktop-marshal.h"
++#include "xfce-tweaks-host.h"
+ 
+ #define ICON_SIZE         (icon_view->icon_size)
+ #define TEXT_WIDTH        ((icon_view->cell_text_width_proportion) * ICON_SIZE)
+@@ -145,6 +146,8 @@ typedef struct
+ 
+     gint row;
+     gint col;
++    gboolean extension_positioned;
++    gint extension_x, extension_y;
+ 
+     GdkRectangle icon_extents;
+     GdkRectangle text_extents;
+@@ -156,6 +159,7 @@ typedef struct
+     guint32 selected:1;
+     guint32 sensitive:1;
+     guint32 placed:1;
++    XtIconState extension_snapshot;
+ } ViewItem;
+ 
+ typedef gboolean (*ViewItemForeachFunc)(ViewItem *item, gpointer user_data);
+@@ -420,6 +424,7 @@ typedef struct {
+     gint dest_col;
+ } XfdesktopDraggedIcon;
+ 
++
+ static void xfdesktop_icon_view_constructed(GObject *object);
+ static void xfdesktop_icon_view_set_property(GObject *object,
+                                              guint property_id,
+@@ -1535,6 +1540,10 @@ update_item_under_pointer(XfdesktopIconView *icon_view, GdkWindow *event_window,
+ static gboolean
+ xfdesktop_icon_view_button_press(GtkWidget *widget, GdkEventButton *evt) {
+     XfdesktopIconView *icon_view = XFDESKTOP_ICON_VIEW(widget);
++#ifdef ENABLE_FILE_ICONS
++    if (xt_press(GTK_WIDGET(icon_view), evt)) return TRUE;
++#endif
++
+ 
+     DBG("entering");
+ 
+@@ -1694,6 +1703,11 @@ xfdesktop_icon_view_button_press(GtkWidget *widget, GdkEventButton *evt) {
+ static gboolean
+ xfdesktop_icon_view_button_release(GtkWidget *widget, GdkEventButton *evt) {
+     XfdesktopIconView *icon_view = XFDESKTOP_ICON_VIEW(widget);
++#ifdef ENABLE_FILE_ICONS
++    if (xt_release(GTK_WIDGET(icon_view), evt)) return TRUE;
++    gboolean xt_was_band = icon_view->definitely_rubber_banding;
++#endif
++
+     gboolean ret = FALSE;
+ 
+     DBG("entering btn=%d", evt->button);
+@@ -1750,6 +1764,10 @@ xfdesktop_icon_view_button_release(GtkWidget *widget, GdkEventButton *evt) {
+ 
+     gtk_grab_remove(widget);
+ 
++#ifdef ENABLE_FILE_ICONS
++    xt_band_menu(GTK_WIDGET(icon_view), evt, xt_was_band);
++#endif
++
+     /* TRUE: stop other handlers from being invoked for the event. FALSE: propagate the event further. */
+     /* On FALSE this method will be called twice in single-click-mode (possibly a gtk3 bug)            */
+     return ret;
+@@ -2057,6 +2075,10 @@ xfdesktop_icon_view_xfconf_tooltip_icon_size_changed(XfconfChannel *channel,
+ static gboolean
+ xfdesktop_icon_view_motion_notify(GtkWidget *widget, GdkEventMotion *evt) {
+     XfdesktopIconView *icon_view = XFDESKTOP_ICON_VIEW(widget);
++#ifdef ENABLE_FILE_ICONS
++    if (xt_motion(GTK_WIDGET(icon_view), evt)) return TRUE;
++#endif
++
+     gboolean ret = FALSE;
+ 
+     if (icon_view->maybe_begin_drag
+@@ -2178,6 +2200,9 @@ static gboolean
+ xfdesktop_icon_view_leave_notify(GtkWidget *widget, GdkEventCrossing *evt) {
+     XfdesktopIconView *icon_view = XFDESKTOP_ICON_VIEW(widget);
+ 
++#ifdef ENABLE_FILE_ICONS
++    xt_leave(GTK_WIDGET(icon_view));
++#endif
+     if (icon_view->item_under_pointer != NULL) {
+         ViewItem *item = icon_view->item_under_pointer;
+         icon_view->item_under_pointer = NULL;
+@@ -2610,6 +2635,9 @@ xfdesktop_icon_view_drag_data_received(GtkWidget *widget,
+ 
+             for (GList *l = icon_list->dragged_icons; l != NULL; l = l->next) {
+                 XfdesktopDraggedIcon *dragged_icon = l->data;
++#ifdef ENABLE_FILE_ICONS
++                xt_dropped(GTK_WIDGET(icon_view), GTK_WIDGET(icon_list->source_icon_view), dragged_icon->item, x, y);
++#endif
+                 g_signal_emit(icon_view, __signals[SIG_ICON_MOVED], 0,
+                               icon_list->source_icon_view,
+                               &dragged_icon->iter,
+@@ -2874,8 +2902,10 @@ xfdesktop_icon_view_shift_to_slot_area(XfdesktopIconView *icon_view,
+     g_return_val_if_fail(item->row >= 0 && item->row < icon_view->nrows, FALSE);
+     g_return_val_if_fail(item->col >= 0 && item->col < icon_view->ncols, FALSE);
+ 
+-    slot_rect->x = icon_view->xmargin + item->col * SLOT_SIZE + item->col * icon_view->xspacing + rect->x;
+-    slot_rect->y = icon_view->ymargin + item->row * SLOT_SIZE + item->row * icon_view->yspacing + rect->y;
++    slot_rect->x = (item->extension_positioned ? item->extension_x
++        : icon_view->xmargin + item->col * SLOT_SIZE + item->col * icon_view->xspacing) + rect->x;
++    slot_rect->y = (item->extension_positioned ? item->extension_y
++        : icon_view->ymargin + item->row * SLOT_SIZE + item->row * icon_view->yspacing) + rect->y;
+     slot_rect->width = rect->width;
+     slot_rect->height = rect->height;
+ 
+@@ -2970,6 +3000,7 @@ xfdesktop_icon_view_unplace_item(XfdesktopIconView *icon_view,
+     xfdesktop_icon_view_invalidate_item(icon_view, item, FALSE);
+ 
+     item->placed = FALSE;
++    item->extension_positioned = FALSE;
+     if (!cairo_region_is_empty(item->icon_slot_region)) {
+         cairo_region_destroy(item->icon_slot_region);
+         item->icon_slot_region = cairo_region_create();
+@@ -3242,6 +3273,22 @@ xfdesktop_icon_view_draw_item(XfdesktopIconView *icon_view,
+     g_return_if_fail(item->row >= 0 && item->row < icon_view->nrows);
+     g_return_if_fail(item->col >= 0 && item->col < icon_view->ncols);
+ 
++#ifdef ENABLE_FILE_ICONS
++    double opacity = xt_icon_opacity(GTK_WIDGET(icon_view), item);
++    if (opacity <= 0) return;
++    if (opacity < 1) {
++        GdkRectangle bounds, icon_bounds, text_bounds;
++        xfdesktop_icon_view_shift_to_slot_area(icon_view, item, &item->icon_extents, &icon_bounds);
++        xfdesktop_icon_view_shift_to_slot_area(icon_view, item, &item->text_extents, &text_bounds);
++        gdk_rectangle_union(&icon_bounds, &text_bounds, &bounds);
++        bounds.x -= 4; bounds.y -= 4; bounds.width += 8; bounds.height += 8;
++        cairo_save(cr);
++        gdk_cairo_rectangle(cr, &bounds);
++        cairo_clip(cr);
++        cairo_push_group(cr);
++    }
++#endif
++
+     // TODO: check grid slot area against extents and bail early if possible
+ 
+     xfdesktop_icon_view_set_cell_properties(icon_view, item);
+@@ -3293,6 +3340,13 @@ xfdesktop_icon_view_draw_item(XfdesktopIconView *icon_view,
+                                        &item->text_extents);
+ 
+     gtk_style_context_restore(style_context);
++#ifdef ENABLE_FILE_ICONS
++    if (opacity < 1) {
++        cairo_pop_group_to_source(cr);
++        cairo_paint_with_alpha(cr, opacity);
++        cairo_restore(cr);
++    }
++#endif
+ }
+ 
+ static gboolean
+@@ -3319,6 +3373,10 @@ xfdesktop_icon_view_draw(GtkWidget *widget,
+     gdk_cairo_get_clip_rectangle(cr, &clipbox);
+     TRACE("clipbox is %dx%d+%d+%d", clipbox.width, clipbox.height, clipbox.x, clipbox.y);
+ 
++#ifdef ENABLE_FILE_ICONS
++    xt_draw(GTK_WIDGET(icon_view), cr);
++#endif
++
+     for (GList *l = icon_view->items; l != NULL; l = l->next) {
+         ViewItem *item = l->data;
+         if (item->placed && !item->selected) {
+@@ -4600,7 +4658,14 @@ xfdesktop_icon_view_widget_coords_to_item_internal(XfdesktopIconView *icon_view,
+     gint row, col;
+ 
+     if (xfdesktop_icon_view_widget_coords_to_slot_coords(icon_view, wx, wy, &row, &col)) {
+-        return xfdesktop_icon_view_item_in_slot(icon_view, row, col);
++        ViewItem *item = xfdesktop_icon_view_item_in_slot(icon_view, row, col);
++        /* A grouped icon's bookkeeping cell can be elsewhere on the desktop.
++         * Never turn a drop on that old cell into a folder/launcher operation. */
++        if (item != NULL && item->extension_positioned
++            && (wx < item->extension_x || wy < item->extension_y
++                || wx >= item->extension_x + SLOT_SIZE || wy >= item->extension_y + SLOT_SIZE))
++            return NULL;
++        return item;
+     } else {
+         return NULL;
+     }
+@@ -4635,6 +4700,11 @@ xfdesktop_icon_view_widget_coords_to_slot_coords(XfdesktopIconView *icon_view,
+ {
+     g_return_val_if_fail(XFDESKTOP_IS_ICON_VIEW(icon_view), FALSE);
+ 
++#ifdef ENABLE_FILE_ICONS
++    if (xt_coords_to_slot(GTK_WIDGET(icon_view), wx, wy, row_out, col_out))
++        return TRUE;
++#endif
++
+     gint row = (wy - icon_view->ymargin) / (SLOT_SIZE + icon_view->yspacing);
+     gint col = (wx - icon_view->xmargin) / (SLOT_SIZE + icon_view->xspacing);
+     if (row >= 0 && row < icon_view->nrows && col >= 0 && col < icon_view->ncols) {
+@@ -4662,6 +4732,13 @@ xfdesktop_icon_view_slot_coords_to_widget_coords(XfdesktopIconView *icon_view,
+     g_return_val_if_fail(col >= 0, FALSE);
+ 
+     if (row < icon_view->nrows && col < icon_view->ncols) {
++        ViewItem *item = icon_view->grid_layout != NULL
++            ? xfdesktop_icon_view_item_in_slot(icon_view, row, col) : NULL;
++        if (item != NULL && item->extension_positioned) {
++            if (wx_out) *wx_out = item->extension_x;
++            if (wy_out) *wy_out = item->extension_y;
++            return TRUE;
++        }
+         if (wx_out != NULL) {
+             *wx_out = icon_view->xmargin + col * SLOT_SIZE + col * icon_view->xspacing;
+         }
+@@ -5299,3 +5376,7 @@ xfdesktop_icon_view_grid_geometry_for_metrics(XfdesktopIconView *icon_view,
+         && *first_row <= *last_row
+         && *first_col <= *last_col;
+ }
++
++#ifdef ENABLE_FILE_ICONS
++#include "xfce-tweaks-icon-adapter.inc"
++#endif
+diff --git a/sdk/xfce-tweaks.h b/sdk/xfce-tweaks.h
+new file mode 100644
+index 0000000..6750157
+--- /dev/null
++++ b/sdk/xfce-tweaks.h
+@@ -0,0 +1,139 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later
++ * Public development ABI 1. Borrowed handles are valid only during callbacks.
++ * No xfdesktop private header or structure is part of this interface.
++ */
++#pragma once
++#include <gmodule.h>
++#include <gtk/gtk.h>
++#include <xfconf/xfconf.h>
++#define XT_ABI_VERSION 1
++#define XT_CAP_ICON_LAYOUT (1u << 0)
++#define XT_CAP_BACKDROP_PROVIDER (1u << 1)
++
++typedef struct {
++  GList *items, *selected_items; /* borrowed opaque icon handles */
++  gboolean grid_layout, model, definitely_rubber_banding;
++  int nrows, ncols, xspacing, yspacing, xmargin, ymargin, slot_padding,
++      icon_size;
++  double slot_size;
++  gboolean label_fg_color_set;
++  GdkRGBA label_fg_color;
++  GdkRectangle band_rect;
++} XtViewState;
++typedef struct {
++  int row, col;
++  gboolean placed, positioned;
++  cairo_region_t *icon_slot_region; /* borrowed, read only */
++} XtIconState;
++typedef struct {
++  GtkWidget *source;
++  gpointer item;
++} XtDrop;
++typedef struct {
++  guint abi_version;
++  gsize struct_size;
++  const XtViewState *(*view_state)(GtkWidget *view);
++  const XtIconState *(*icon_state)(gpointer item);
++  const char *(*icon_id)(GtkWidget *view, gpointer item);
++  void (*set_icon_origin)(gpointer item, double x, double y);
++  gboolean (*slot_occupied)(GtkWidget *view, int row, int col);
++  gboolean (*place_icon)(GtkWidget *view, gpointer item, int row, int col);
++  void (*unplace_icon)(GtkWidget *view, gpointer item);
++  void (*place_icon_default)(GtkWidget *view, gpointer item);
++  void (*transfer_icon)(GtkWidget *source, GtkWidget *destination,
++                        gpointer item);
++  gboolean (*is_icon_drag)(GtkWidget *view, GdkDragContext *context);
++  GPtrArray *(*decode_icon_drop)(GtkSelectionData *data,
++                                 guint info); /* XtDrop*, caller frees */
++  void (*set_drag_pending)(GtkWidget *view, gboolean pending);
++  void (*set_backdrop_widget)(GtkWidget *desktop, GtkWidget *child);
++  XfconfChannel *(*settings)(void); /* borrowed xfce4-desktop channel */
++} XtHost;
++typedef struct {
++  guint abi_version;
++  gsize struct_size;
++  const char *id;
++  const char *name;
++  void (*attach_view)(GtkWidget *, const char *monitor_id);
++  void (*detach_view)(GtkWidget *);
++  void (*draw)(GtkWidget *, cairo_t *);
++  gboolean (*coords_to_slot)(GtkWidget *, int, int, int *, int *);
++  gboolean (*button_press)(GtkWidget *, GdkEventButton *);
++  gboolean (*button_release)(GtkWidget *, GdkEventButton *);
++  gboolean (*motion)(GtkWidget *, GdkEventMotion *);
++  void (*leave)(GtkWidget *);
++  void (*band_complete)(GtkWidget *, GdkEventButton *, gboolean);
++  void (*icon_dropped)(GtkWidget *destination, GtkWidget *source, gpointer item,
++                       int x, int y);
++  void (*view_menu)(GtkWidget *, GtkWidget *menu, int x, int y);
++  void (*file_renamed)(GFile *, GFile *);
++  void (*attach_desktop)(GtkWidget *);
++  void (*detach_desktop)(GtkWidget *);
++  gboolean (*backdrop_changed)(GtkWidget *, const char *filename,
++                               const char *property_prefix);
++  void (*desktop_menu)(GtkWidget *, GtkWidget *menu);
++  guint64 capabilities; /* Declare exclusive icon-layout/backdrop ownership. */
++} XtTweak;
++typedef const XtTweak *(*XtQuery)(const XtHost *host);
++/* Each module exports exactly this entry point. Other symbols stay private. */
++G_MODULE_EXPORT const XtTweak *xfce_tweak_query(const XtHost *host);
++
++/* Optional, additive cooperation between modules; no host ABI change.
++ * Register interactive surfaces so empty-desktop gestures respect them.
++ * Callbacks must only test bounds and must unregister before data is freed. */
++typedef gboolean (*XtSurfaceHitTest)(GtkWidget *, double, double, gpointer);
++typedef struct { XtSurfaceHitTest test; gpointer data; } XtSurface;
++static inline void xt_surface_register(GtkWidget *view, const char *id,
++                                      XtSurfaceHitTest test, gpointer data) {
++  GHashTable *surfaces = g_object_get_data(G_OBJECT(view), "xt-interactive-surfaces-1");
++  if (!surfaces) {
++    surfaces = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
++    g_object_set_data_full(G_OBJECT(view), "xt-interactive-surfaces-1", surfaces,
++                          (GDestroyNotify)g_hash_table_unref);
++  }
++  XtSurface *surface = g_new(XtSurface, 1);
++  *surface = (XtSurface){test, data};
++  g_hash_table_replace(surfaces, g_strdup(id), surface);
++}
++static inline void xt_surface_unregister(GtkWidget *view, const char *id) {
++  GHashTable *surfaces = g_object_get_data(G_OBJECT(view), "xt-interactive-surfaces-1");
++  if (surfaces) g_hash_table_remove(surfaces, id);
++}
++static inline gboolean xt_surface_at(GtkWidget *view, double x, double y) {
++  GHashTable *surfaces = g_object_get_data(G_OBJECT(view), "xt-interactive-surfaces-1");
++  if (!surfaces) return FALSE;
++  GHashTableIter iter; gpointer value;
++  g_hash_table_iter_init(&iter, surfaces);
++  while (g_hash_table_iter_next(&iter, NULL, &value)) {
++    XtSurface *surface = value;
++    if (surface->test(view, x, y, surface->data)) return TRUE;
++  }
++  return FALSE;
++}
++
++/* Per-frame icon opacity providers. Opaque item handles are never dereferenced.
++ * Clear a provider before filling a frame and on detach. Unspecified icons are
++ * fully opaque; cooperating providers multiply their opacity contributions. */
++static inline GHashTable *xt_opacity_providers(GtkWidget *view, gboolean create) {
++  GHashTable *providers=g_object_get_data(G_OBJECT(view),"xt-icon-opacity-1");
++  if (!providers && create) {
++    providers=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,(GDestroyNotify)g_hash_table_unref);
++    g_object_set_data_full(G_OBJECT(view),"xt-icon-opacity-1",providers,(GDestroyNotify)g_hash_table_unref);
++  }
++  return providers;
++}
++static inline void xt_icon_opacity_clear(GtkWidget *view,const char *owner) {
++  GHashTable *providers=xt_opacity_providers(view,FALSE);
++  if (providers) { GHashTable *items=g_hash_table_lookup(providers,owner);if(items)g_hash_table_remove_all(items); }
++}
++static inline void xt_icon_opacity_set(GtkWidget *view,const char *owner,gpointer item,double opacity) {
++  if (!(opacity>=0 && opacity<=1)) opacity=1;
++  GHashTable *providers=xt_opacity_providers(view,TRUE),*items=g_hash_table_lookup(providers,owner);
++  if (!items) {items=g_hash_table_new_full(g_direct_hash,g_direct_equal,NULL,g_free);g_hash_table_insert(providers,g_strdup(owner),items);}
++  double *value=g_new(double,1);*value=opacity;g_hash_table_replace(items,item,value);
++}
++static inline double xt_icon_opacity(GtkWidget *view,gpointer item) {
++  GHashTable *providers=xt_opacity_providers(view,FALSE);double opacity=1;
++  if (providers) {GHashTableIter iter;gpointer table;g_hash_table_iter_init(&iter,providers);while(g_hash_table_iter_next(&iter,NULL,&table)){double *value=g_hash_table_lookup(table,item);if(value)opacity*=*value;}}
++  return opacity;
++}

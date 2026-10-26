@@ -73,6 +73,7 @@
 #include "xfdesktop-backdrop-media.h"
 #include "xfdesktop-common.h"
 #include "xfce-desktop.h"
+#include "xfce-tweaks-host.h"
 
 #ifdef ENABLE_X11
 #include "xfdesktop-x11.h"
@@ -120,10 +121,10 @@ struct _XfceDesktop {
 
     XfdesktopBackdropMedia *bmedia;
 
-#ifdef ENABLE_VIDEO_BACKDROP
     GtkWidget *overlay;
     GtkWidget *overlay_child[N_XFCE_DESKTOP_LAYER];
 
+#ifdef ENABLE_VIDEO_BACKDROP
     gboolean gst_initialized;
     gboolean smart_pause_video;
     GstElement *playbin;
@@ -390,6 +391,16 @@ static void
 fetch_backdrop(XfceDesktop *desktop, gboolean force_reload) {
     TRACE("entering");
     if (gtk_widget_get_realized(GTK_WIDGET(desktop)) && desktop->backdrop_workspace != NULL) {
+        char *prefix=xfdesktop_backdrop_manager_extension_prefix(desktop->backdrop_manager,desktop->monitor,desktop->backdrop_workspace);
+        char *key=g_strconcat(prefix,"/last-image",NULL);
+        char *filename=xfconf_channel_get_string(desktop->channel,key,NULL);
+        gboolean handled=xt_backdrop_changed(GTK_WIDGET(desktop),filename,prefix);
+        g_free(filename);g_free(key);g_free(prefix);
+        if(handled) {
+            if(desktop->backdrop_load_cancellable)g_cancellable_cancel(desktop->backdrop_load_cancellable);
+            return;
+        }
+
         if (desktop->backdrop_load_cancellable != NULL) {
             g_cancellable_cancel(desktop->backdrop_load_cancellable);
             g_object_unref(desktop->backdrop_load_cancellable);
@@ -659,10 +670,10 @@ xfce_desktop_constructed(GObject *obj)
     workspace_manager = xfw_screen_get_workspace_manager(desktop->xfw_screen);
     desktop->workspace_manager = workspace_manager;
 
-#ifdef ENABLE_VIDEO_BACKDROP
     desktop->overlay = gtk_overlay_new();
     gtk_container_add(GTK_CONTAINER(desktop), desktop->overlay);
-#endif /* ENABLE_VIDEO_BACKDROP */
+    gtk_widget_show(desktop->overlay);
+    xt_attach_desktop(GTK_WIDGET(desktop));
 
     /* watch for workspace changes */
     for (GList *gl = xfw_workspace_manager_list_workspace_groups(workspace_manager);
@@ -1494,36 +1505,18 @@ xfce_desktop_cycle_backdrop(XfceDesktop *desktop) {
     }
 }
 
-#ifdef ENABLE_VIDEO_BACKDROP
 void
 xfce_desktop_put_to_layer(XfceDesktop *desktop, XfceDesktopLayer n, GtkWidget *child) {
-    g_return_if_fail(XFCE_IS_DESKTOP(desktop));
-    g_return_if_fail(n >= 0 && n <= N_XFCE_DESKTOP_LAYER);
-
-    if (desktop->overlay_child[n] != NULL) {
-        if (n == XFCE_DESKTOP_LAYER_BACKDROP) {
-            /* Creating a video widget is very time consuming so we don't delete the widgets HERE,
-             * instead they are deleted in XfdesktopBackdropMedia */
-            gtk_widget_hide(desktop->overlay_child[n]);
-        } else {
-            gtk_container_remove(GTK_CONTAINER(desktop->overlay), desktop->overlay_child[n]);
-        }
-        gtk_widget_hide(desktop->overlay_child[n]);
-        desktop->overlay_child[n] = NULL;
-    }
-
-    if (child != NULL) {
-        if (gtk_widget_get_parent(child) == NULL) {
-            gtk_overlay_add_overlay(GTK_OVERLAY(desktop->overlay), child);
-            if (n == XFCE_DESKTOP_LAYER_BACKDROP) {
-                /* The background should not intercept events for icons */
-                gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(desktop->overlay), child, TRUE);
-            }
-            gtk_overlay_reorder_overlay(GTK_OVERLAY(desktop->overlay), child, n);
-        }
-
-        desktop->overlay_child[n] = child;
-        gtk_widget_show(child);
+    g_return_if_fail(n >= 0 && n < N_XFCE_DESKTOP_LAYER);
+    GtkWidget *previous=desktop->overlay_child[n];
+    if(previous==child)return;
+    desktop->overlay_child[n]=NULL;
+    if(previous && gtk_widget_get_parent(previous)==desktop->overlay)
+        gtk_container_remove(GTK_CONTAINER(desktop->overlay),previous);
+    if(child) {
+        gtk_overlay_add_overlay(GTK_OVERLAY(desktop->overlay),child);
+        gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(desktop->overlay),child,n==XFCE_DESKTOP_LAYER_BACKDROP);
+        gtk_overlay_reorder_overlay(GTK_OVERLAY(desktop->overlay),child,n);
+        desktop->overlay_child[n]=child;gtk_widget_show(child);
     }
 }
-#endif /* ENABLE_VIDEO_BACKDROP */

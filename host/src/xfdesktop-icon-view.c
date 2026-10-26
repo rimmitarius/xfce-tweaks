@@ -46,6 +46,7 @@
 #include "xfdesktop-common.h"
 #include "xfdesktop-icon-view.h"
 #include "xfdesktop-marshal.h"
+#include "xfce-tweaks-host.h"
 
 #define ICON_SIZE         (icon_view->icon_size)
 #define TEXT_WIDTH        ((icon_view->cell_text_width_proportion) * ICON_SIZE)
@@ -145,6 +146,8 @@ typedef struct
 
     gint row;
     gint col;
+    gboolean extension_positioned;
+    gint extension_x, extension_y;
 
     GdkRectangle icon_extents;
     GdkRectangle text_extents;
@@ -156,6 +159,7 @@ typedef struct
     guint32 selected:1;
     guint32 sensitive:1;
     guint32 placed:1;
+    XtIconState extension_snapshot;
 } ViewItem;
 
 typedef gboolean (*ViewItemForeachFunc)(ViewItem *item, gpointer user_data);
@@ -419,6 +423,7 @@ typedef struct {
     gint dest_row;
     gint dest_col;
 } XfdesktopDraggedIcon;
+
 
 static void xfdesktop_icon_view_constructed(GObject *object);
 static void xfdesktop_icon_view_set_property(GObject *object,
@@ -1535,6 +1540,10 @@ update_item_under_pointer(XfdesktopIconView *icon_view, GdkWindow *event_window,
 static gboolean
 xfdesktop_icon_view_button_press(GtkWidget *widget, GdkEventButton *evt) {
     XfdesktopIconView *icon_view = XFDESKTOP_ICON_VIEW(widget);
+#ifdef ENABLE_FILE_ICONS
+    if (xt_press(GTK_WIDGET(icon_view), evt)) return TRUE;
+#endif
+
 
     DBG("entering");
 
@@ -1694,6 +1703,11 @@ xfdesktop_icon_view_button_press(GtkWidget *widget, GdkEventButton *evt) {
 static gboolean
 xfdesktop_icon_view_button_release(GtkWidget *widget, GdkEventButton *evt) {
     XfdesktopIconView *icon_view = XFDESKTOP_ICON_VIEW(widget);
+#ifdef ENABLE_FILE_ICONS
+    if (xt_release(GTK_WIDGET(icon_view), evt)) return TRUE;
+    gboolean xt_was_band = icon_view->definitely_rubber_banding;
+#endif
+
     gboolean ret = FALSE;
 
     DBG("entering btn=%d", evt->button);
@@ -1749,6 +1763,10 @@ xfdesktop_icon_view_button_release(GtkWidget *widget, GdkEventButton *evt) {
     }
 
     gtk_grab_remove(widget);
+
+#ifdef ENABLE_FILE_ICONS
+    xt_band_menu(GTK_WIDGET(icon_view), evt, xt_was_band);
+#endif
 
     /* TRUE: stop other handlers from being invoked for the event. FALSE: propagate the event further. */
     /* On FALSE this method will be called twice in single-click-mode (possibly a gtk3 bug)            */
@@ -2057,6 +2075,10 @@ xfdesktop_icon_view_xfconf_tooltip_icon_size_changed(XfconfChannel *channel,
 static gboolean
 xfdesktop_icon_view_motion_notify(GtkWidget *widget, GdkEventMotion *evt) {
     XfdesktopIconView *icon_view = XFDESKTOP_ICON_VIEW(widget);
+#ifdef ENABLE_FILE_ICONS
+    if (xt_motion(GTK_WIDGET(icon_view), evt)) return TRUE;
+#endif
+
     gboolean ret = FALSE;
 
     if (icon_view->maybe_begin_drag
@@ -2178,6 +2200,9 @@ static gboolean
 xfdesktop_icon_view_leave_notify(GtkWidget *widget, GdkEventCrossing *evt) {
     XfdesktopIconView *icon_view = XFDESKTOP_ICON_VIEW(widget);
 
+#ifdef ENABLE_FILE_ICONS
+    xt_leave(GTK_WIDGET(icon_view));
+#endif
     if (icon_view->item_under_pointer != NULL) {
         ViewItem *item = icon_view->item_under_pointer;
         icon_view->item_under_pointer = NULL;
@@ -2610,6 +2635,9 @@ xfdesktop_icon_view_drag_data_received(GtkWidget *widget,
 
             for (GList *l = icon_list->dragged_icons; l != NULL; l = l->next) {
                 XfdesktopDraggedIcon *dragged_icon = l->data;
+#ifdef ENABLE_FILE_ICONS
+                xt_dropped(GTK_WIDGET(icon_view), GTK_WIDGET(icon_list->source_icon_view), dragged_icon->item, x, y);
+#endif
                 g_signal_emit(icon_view, __signals[SIG_ICON_MOVED], 0,
                               icon_list->source_icon_view,
                               &dragged_icon->iter,
@@ -2874,8 +2902,10 @@ xfdesktop_icon_view_shift_to_slot_area(XfdesktopIconView *icon_view,
     g_return_val_if_fail(item->row >= 0 && item->row < icon_view->nrows, FALSE);
     g_return_val_if_fail(item->col >= 0 && item->col < icon_view->ncols, FALSE);
 
-    slot_rect->x = icon_view->xmargin + item->col * SLOT_SIZE + item->col * icon_view->xspacing + rect->x;
-    slot_rect->y = icon_view->ymargin + item->row * SLOT_SIZE + item->row * icon_view->yspacing + rect->y;
+    slot_rect->x = (item->extension_positioned ? item->extension_x
+        : icon_view->xmargin + item->col * SLOT_SIZE + item->col * icon_view->xspacing) + rect->x;
+    slot_rect->y = (item->extension_positioned ? item->extension_y
+        : icon_view->ymargin + item->row * SLOT_SIZE + item->row * icon_view->yspacing) + rect->y;
     slot_rect->width = rect->width;
     slot_rect->height = rect->height;
 
@@ -2970,6 +3000,7 @@ xfdesktop_icon_view_unplace_item(XfdesktopIconView *icon_view,
     xfdesktop_icon_view_invalidate_item(icon_view, item, FALSE);
 
     item->placed = FALSE;
+    item->extension_positioned = FALSE;
     if (!cairo_region_is_empty(item->icon_slot_region)) {
         cairo_region_destroy(item->icon_slot_region);
         item->icon_slot_region = cairo_region_create();
@@ -3242,6 +3273,22 @@ xfdesktop_icon_view_draw_item(XfdesktopIconView *icon_view,
     g_return_if_fail(item->row >= 0 && item->row < icon_view->nrows);
     g_return_if_fail(item->col >= 0 && item->col < icon_view->ncols);
 
+#ifdef ENABLE_FILE_ICONS
+    double opacity = xt_icon_opacity(GTK_WIDGET(icon_view), item);
+    if (opacity <= 0) return;
+    if (opacity < 1) {
+        GdkRectangle bounds, icon_bounds, text_bounds;
+        xfdesktop_icon_view_shift_to_slot_area(icon_view, item, &item->icon_extents, &icon_bounds);
+        xfdesktop_icon_view_shift_to_slot_area(icon_view, item, &item->text_extents, &text_bounds);
+        gdk_rectangle_union(&icon_bounds, &text_bounds, &bounds);
+        bounds.x -= 4; bounds.y -= 4; bounds.width += 8; bounds.height += 8;
+        cairo_save(cr);
+        gdk_cairo_rectangle(cr, &bounds);
+        cairo_clip(cr);
+        cairo_push_group(cr);
+    }
+#endif
+
     // TODO: check grid slot area against extents and bail early if possible
 
     xfdesktop_icon_view_set_cell_properties(icon_view, item);
@@ -3293,6 +3340,13 @@ xfdesktop_icon_view_draw_item(XfdesktopIconView *icon_view,
                                        &item->text_extents);
 
     gtk_style_context_restore(style_context);
+#ifdef ENABLE_FILE_ICONS
+    if (opacity < 1) {
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, opacity);
+        cairo_restore(cr);
+    }
+#endif
 }
 
 static gboolean
@@ -3318,6 +3372,10 @@ xfdesktop_icon_view_draw(GtkWidget *widget,
 
     gdk_cairo_get_clip_rectangle(cr, &clipbox);
     TRACE("clipbox is %dx%d+%d+%d", clipbox.width, clipbox.height, clipbox.x, clipbox.y);
+
+#ifdef ENABLE_FILE_ICONS
+    xt_draw(GTK_WIDGET(icon_view), cr);
+#endif
 
     for (GList *l = icon_view->items; l != NULL; l = l->next) {
         ViewItem *item = l->data;
@@ -4600,7 +4658,14 @@ xfdesktop_icon_view_widget_coords_to_item_internal(XfdesktopIconView *icon_view,
     gint row, col;
 
     if (xfdesktop_icon_view_widget_coords_to_slot_coords(icon_view, wx, wy, &row, &col)) {
-        return xfdesktop_icon_view_item_in_slot(icon_view, row, col);
+        ViewItem *item = xfdesktop_icon_view_item_in_slot(icon_view, row, col);
+        /* A grouped icon's bookkeeping cell can be elsewhere on the desktop.
+         * Never turn a drop on that old cell into a folder/launcher operation. */
+        if (item != NULL && item->extension_positioned
+            && (wx < item->extension_x || wy < item->extension_y
+                || wx >= item->extension_x + SLOT_SIZE || wy >= item->extension_y + SLOT_SIZE))
+            return NULL;
+        return item;
     } else {
         return NULL;
     }
@@ -4635,6 +4700,11 @@ xfdesktop_icon_view_widget_coords_to_slot_coords(XfdesktopIconView *icon_view,
 {
     g_return_val_if_fail(XFDESKTOP_IS_ICON_VIEW(icon_view), FALSE);
 
+#ifdef ENABLE_FILE_ICONS
+    if (xt_coords_to_slot(GTK_WIDGET(icon_view), wx, wy, row_out, col_out))
+        return TRUE;
+#endif
+
     gint row = (wy - icon_view->ymargin) / (SLOT_SIZE + icon_view->yspacing);
     gint col = (wx - icon_view->xmargin) / (SLOT_SIZE + icon_view->xspacing);
     if (row >= 0 && row < icon_view->nrows && col >= 0 && col < icon_view->ncols) {
@@ -4662,6 +4732,13 @@ xfdesktop_icon_view_slot_coords_to_widget_coords(XfdesktopIconView *icon_view,
     g_return_val_if_fail(col >= 0, FALSE);
 
     if (row < icon_view->nrows && col < icon_view->ncols) {
+        ViewItem *item = icon_view->grid_layout != NULL
+            ? xfdesktop_icon_view_item_in_slot(icon_view, row, col) : NULL;
+        if (item != NULL && item->extension_positioned) {
+            if (wx_out) *wx_out = item->extension_x;
+            if (wy_out) *wy_out = item->extension_y;
+            return TRUE;
+        }
         if (wx_out != NULL) {
             *wx_out = icon_view->xmargin + col * SLOT_SIZE + col * icon_view->xspacing;
         }
@@ -5299,3 +5376,7 @@ xfdesktop_icon_view_grid_geometry_for_metrics(XfdesktopIconView *icon_view,
         && *first_row <= *last_row
         && *first_col <= *last_col;
 }
+
+#ifdef ENABLE_FILE_ICONS
+#include "xfce-tweaks-icon-adapter.inc"
+#endif

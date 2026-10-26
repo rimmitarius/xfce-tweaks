@@ -1,0 +1,18 @@
+/build-host/
+/build-modules/
+/build-deps/
+/releases/
+/research/
+/packages/*.tmp
+/Preview Modular Desktop.desktop
+/XFCE Tweaks Manager.desktop
+/tests/example-tweak/
+/tests/x11/
+/tests/*.log
+/tests/*.json
+/tests/*.png
+__pycache__/
+*.pyc
+/test-results/
+/modules/*/build/
+/modules/*/*.xfce-tweak

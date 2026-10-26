@@ -1,0 +1,21 @@
+[Unit]
+Description=HP Victus/Omen custom fan curve with independent thermal protection
+After=systemd-modules-load.service
+
+[Service]
+Type=notify
+ExecStart=/usr/libexec/xfce-tweaks-victus-helper fan-daemon
+ExecStopPost=/usr/libexec/xfce-tweaks-victus-helper fan-reset
+WatchdogSec=8s
+WatchdogSignal=SIGKILL
+TimeoutStartSec=12s
+TimeoutStopSec=5s
+Restart=no
+User=root
+UMask=0022
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/sys/devices/platform/hp-wmi /run/xfce-tweaks
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX

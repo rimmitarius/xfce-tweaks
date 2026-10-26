@@ -1,0 +1,21 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+#include "../modules/video-wallpaper/video-wallpaper.c"
+static XfconfChannel*channel;
+static XfconfChannel*settings(void){return channel;}
+static void layer(GtkWidget*desktop,GtkWidget*widget){GtkWidget*old=gtk_bin_get_child(GTK_BIN(desktop));if(old)gtk_container_remove(GTK_CONTAINER(desktop),old);if(widget){gtk_container_add(GTK_CONTAINER(desktop),widget);gtk_widget_show(widget);}}
+static void pump(double seconds){gint64 until=g_get_monotonic_time()+(gint64)(seconds*G_USEC_PER_SEC);while(g_get_monotonic_time()<until){while(g_main_context_iteration(NULL,FALSE));g_usleep(1000);}}
+static void state(Video*v,GstState expected){for(int n=0;n<100;n++){GstState current;gst_element_get_state(v->player,&current,NULL,0);if(current==expected)return;pump(.05);}g_error("Video did not reach expected state %d",expected);}
+static void selected(Video*v,const char*filename){char*key=display_key(v,"file");xfconf_channel_set_string(channel,key,filename);g_free(key);}
+static void assert_color(int x,gboolean red){GdkPixbuf*p=gdk_pixbuf_get_from_window(gdk_get_default_root_window(),x,100,1,1);g_assert_nonnull(p);guchar*pixel=gdk_pixbuf_get_pixels(p);g_assert_cmpint(pixel[red?0:2],>,200);g_assert_cmpint(pixel[red?2:0],<,40);g_object_unref(p);}
+static Video*setup(GtkWidget*d,const char*id,const char*file){attach(d);Video*v=g_object_get_data(G_OBJECT(d),"xt-video");v->monitor_id=g_strdup(id);g_assert_true(backdrop(d,file,"/backdrop/shared-spanning-prefix"));return v;}
+int main(int argc,char**argv){
+ gtk_init(&argc,&argv);g_assert_cmpint(argc,==,3);g_assert_true(xfconf_init(NULL));channel=xfconf_channel_get("xfce4-desktop");XtHost api={.abi_version=XT_ABI_VERSION,.struct_size=sizeof(XtHost),.settings=settings,.set_backdrop_widget=layer};g_assert_nonnull(xfce_tweak_query(&api));
+ xfconf_channel_set_bool(channel,"/video-wallpaper/paused",FALSE);xfconf_channel_set_bool(channel,"/video-wallpaper/muted",TRUE);
+ GtkWidget*windows[2];for(int i=0;i<2;i++){windows[i]=gtk_window_new(GTK_WINDOW_TOPLEVEL);gtk_window_set_decorated(GTK_WINDOW(windows[i]),FALSE);gtk_window_set_default_size(GTK_WINDOW(windows[i]),640,360);gtk_window_move(GTK_WINDOW(windows[i]),i*640,0);gtk_widget_show(windows[i]);}
+ Video*a=setup(windows[0],"stable-a",argv[1]),*b=setup(windows[1],"stable-b",argv[1]);state(a,GST_STATE_PLAYING);state(b,GST_STATE_PLAYING);
+ GstElement*unchanged=a->player;selected(a,argv[1]);selected(b,argv[2]);state(b,GST_STATE_PLAYING);pump(.4);g_assert_true(a->player==unchanged);g_assert_cmpstr(a->filename,==,argv[1]);g_assert_cmpstr(b->filename,==,argv[2]);assert_color(200,TRUE);assert_color(840,FALSE);g_print("PASS different decoded videos on separate displays, including a shared native prefix\n");
+ pause_video(NULL,a);state(a,GST_STATE_PAUSED);state(b,GST_STATE_PLAYING);gint64 pa,pb,qa,qb;gst_element_query_position(a->player,GST_FORMAT_TIME,&pa);gst_element_query_position(b->player,GST_FORMAT_TIME,&pb);pump(.4);gst_element_query_position(a->player,GST_FORMAT_TIME,&qa);gst_element_query_position(b->player,GST_FORMAT_TIME,&qb);g_assert_cmpint(pa,==,qa);g_assert_cmpint(qb,!=,pb);g_assert_false(xfconf_channel_get_bool(channel,"/video-wallpaper/paused",TRUE));g_print("PASS pausing one display leaves the other playing without modifying legacy defaults\n");
+ GtkWidget*check=gtk_check_menu_item_new();g_object_ref_sink(check);gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(check),FALSE);mute(GTK_CHECK_MENU_ITEM(check),a);gboolean ma,mb;g_object_get(a->player,"mute",&ma,NULL);g_object_get(b->player,"mute",&mb,NULL);g_assert_false(ma);g_assert_true(mb);g_object_unref(check);g_print("PASS independent audio mute\n");
+ detach(windows[0]);detach(windows[1]);a=setup(windows[0],"stable-a",argv[2]);b=setup(windows[1],"stable-b",argv[1]);state(a,GST_STATE_PAUSED);state(b,GST_STATE_PLAYING);g_assert_cmpstr(a->filename,==,argv[1]);g_assert_cmpstr(b->filename,==,argv[2]);g_assert_false(display_bool(a,"muted",TRUE));g_assert_true(display_bool(b,"muted",FALSE));g_print("PASS files, playback and mute persist across module restart\n");
+ detach(windows[0]);detach(windows[1]);gtk_widget_destroy(windows[0]);gtk_widget_destroy(windows[1]);xfconf_shutdown();return 0;
+}

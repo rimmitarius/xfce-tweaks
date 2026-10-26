@@ -981,3 +981,8 @@ xfdesktop_backdrop_manager_monitor_changed(XfdesktopBackdropManager *manager, Xf
     g_hash_table_foreach(manager->backdrops, backdrops_ht_invalidate, &bifd);
     g_free(bifd.property_prefix_prefix);
 }
+
+/* Resolve extension backdrop requests through the native monitor/workspace rules. */
+char *xfdesktop_backdrop_manager_extension_prefix(XfdesktopBackdropManager *m, XfwMonitor *monitor, XfwWorkspace *workspace) {
+ return build_property_prefix(m,monitor,workspace,NULL,NULL);
+}

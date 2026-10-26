@@ -25,6 +25,7 @@
 #include "xfdesktop-common.h"
 #include "xfdesktop-extensions.h"
 #include "xfdesktop-file-icon-model.h"
+#include "xfce-tweaks-host.h"
 #include "xfdesktop-file-icon.h"
 #include "xfdesktop-icon.h"
 #include "xfdesktop-icon-view-model.h"
@@ -907,6 +908,11 @@ file_monitor_changed(GFileMonitor *monitor,
                 }
                 XF_DEBUG("row %d, col %d", row, col);
 
+                if(other_file != NULL) {
+                    GFile *parent=g_file_get_parent(other_file);
+                    if(parent && g_file_equal(parent,fmodel->folder))xt_file_renamed(file,other_file);
+                    g_clear_object(&parent);
+                }
                 /* Remove the old icon */
                 remove_icon(fmodel, icon);
             }

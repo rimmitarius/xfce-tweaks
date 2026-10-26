@@ -71,6 +71,6 @@ option(
 option(
   'video-backdrop',
   type: 'boolean',
-  value: true,
+  value: false,
   description: 'Support for setting video as backdrop'
 )

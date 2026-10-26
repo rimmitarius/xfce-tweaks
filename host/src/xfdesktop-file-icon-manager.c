@@ -62,6 +62,7 @@
 #include "xfdesktop-common.h"
 #include "xfdesktop-file-icon.h"
 #include "xfdesktop-file-icon-manager.h"
+#include "xfce-tweaks-host.h"
 #include "xfdesktop-file-icon-model.h"
 #include "xfdesktop-file-icon-model-filter.h"
 #include "xfdesktop-file-utils.h"
@@ -1414,6 +1415,7 @@ finish_create_icon_view(XfdesktopFileIconManager *fmanager, XfceDesktop *desktop
                                                 "row-column", XFDESKTOP_ICON_VIEW_MODEL_COLUMN_ROW,
                                                 "col-column", XFDESKTOP_ICON_VIEW_MODEL_COLUMN_COL,
                                                 NULL);
+    xt_attach_view(GTK_WIDGET(icon_view), xfw_monitor_get_identifier(xfce_desktop_get_monitor(desktop)));
     xfdesktop_icon_view_set_selection_mode(icon_view, GTK_SELECTION_MULTIPLE);
     xfdesktop_icon_view_enable_drag_source(icon_view,
                                            GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_BUTTON1_MASK,
@@ -2198,6 +2200,8 @@ xfdesktop_file_icon_manager_get_context_menu(XfdesktopIconViewManager *manager,
             gtk_widget_set_sensitive(properties_mi, info != NULL);
         }
     }
+
+    xt_view_menu(GTK_WIDGET(icon_view), menu, popup_x, popup_y);
 
     /* don't free |selected|.  the menu deactivated handler does that */
 
