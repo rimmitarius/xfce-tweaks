@@ -15,6 +15,16 @@ Inside the preview:
 
 Closing the Xephyr window closes the preview. Preview settings, imported Tweaks, and sample desktop files persist under `~/.local/state/xfce-tweaks-preview/`. This is a separate test desktop and configuration, not a security sandbox: native modules have your user account's normal file permissions.
 
+## Screenshots
+
+These screenshots are from the isolated Xephyr preview and use sample files and a sample group. The appearance view shows the **Project Hub** group with its settings open, including background and hover opacity, size, rounded corners, border, title alignment, and text shadow controls.
+
+![Project Hub desktop group alongside its appearance controls in the isolated XFCE preview](docs/screenshots/group-appearance.png)
+
+| XFCE Tweaks Manager | Desktop Groups menu |
+| --- | --- |
+| ![XFCE Tweaks Manager showing independently enabled desktop extensions](docs/screenshots/tweaks-manager.png) | ![Desktop Groups actions grouped in a native XFCE desktop context-menu submenu](docs/screenshots/desktop-groups-menu.png) |
+
 **XFCE Tweaks Manager** detects the host through a session-scoped D-Bus name. If an older desktop build is running instead, it clearly reports that state and disables the switches rather than showing controls that cannot work.
 
 ## Build
