@@ -25,6 +25,10 @@ These screenshots are from the isolated Xephyr preview and use sample files and 
 | --- | --- |
 | ![XFCE Tweaks Manager showing independently enabled desktop extensions](docs/screenshots/tweaks-manager.png) | ![Desktop Groups actions grouped in a native XFCE desktop context-menu submenu](docs/screenshots/desktop-groups-menu.png) |
 
+![CPU, GPU, memory, storage, weather, and clock widgets active alongside two populated desktop groups](docs/screenshots/widgets-and-group.png)
+
+The preview above has the CPU, GPU, Memory, Storage, Weather, and Clock widgets active, with desktop icons arranged in two named groups.
+
 **XFCE Tweaks Manager** detects the host through a session-scoped D-Bus name. If an older desktop build is running instead, it clearly reports that state and disables the switches rather than showing controls that cannot work.
 
 ## Build
