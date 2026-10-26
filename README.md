@@ -1,4 +1,4 @@
-# XFCE Tweaks — modular desktop environment
+# XFCE Tweaks — A Native Extension Framework for XFCE's Desktop
 
 A native extension host built on **pristine upstream xfdesktop 4.21.0**, with Desktop Groups and Video Wallpaper as its first two independently compiled, dynamically loaded Tweaks. It targets Linux distributions with XFCE on X11. Fedora 44 is the only distribution verified so far; see [platform and build requirements](docs/INSTALLATION.md) before building on another distribution.
 
