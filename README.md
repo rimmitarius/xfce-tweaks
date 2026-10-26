@@ -1,6 +1,8 @@
 # XFCE Tweaks — modular desktop environment
 
-A native extension host built on **pristine upstream xfdesktop 4.21.0**, with Desktop Groups and Video Wallpaper as its first two independently compiled, dynamically loaded Tweaks. This is an experimental developer release for Fedora 44 / XFCE / X11.
+A native extension host built on **pristine upstream xfdesktop 4.21.0**, with Desktop Groups and Video Wallpaper as its first two independently compiled, dynamically loaded Tweaks. It targets Linux distributions with XFCE on X11. Fedora 44 is the only distribution verified so far; see [platform and build requirements](docs/INSTALLATION.md) before building on another distribution.
+
+[Get XFCE Tweaks 0.1.0 Alpha 1](https://github.com/rimmitarius/xfce-tweaks/releases/tag/v0.1.0-alpha1) · [Release notes](docs/RELEASE-NOTES-0.1.0-alpha1.md) · [Install guide](docs/INSTALLATION.md)
 
 ## Try it now
 
@@ -36,13 +38,11 @@ The preview above has the CPU, GPU, Memory, Storage, Weather, and Clock widgets 
 The private development build installs under `~/.local/lib/xfce-tweaks-modular/`. For full build, host-patch, live activation and rollback instructions, see [Installation](docs/INSTALLATION.md). The complete SDK calls are in the [API reference](docs/API-REFERENCE.md); [GitHub upload instructions](docs/GITHUB-UPLOAD.md) describe this source bundle. To build and preview it:
 
 ```bash
-./scripts/install-dependencies.sh
-./scripts/install-test-dependencies.sh
 ./scripts/build.sh
 ./scripts/preview.py
 ```
 
-Run as your normal user. Only the dependency helpers use sudo, to install Fedora packages. The build installs private libraries, the host, the SDK, all bundled modules, and the manager. It never overwrites `/usr/bin/xfdesktop`, modifies autostart, or changes the active desktop service. All project/XFCE source inputs are bundled under `upstream/`; Fedora dependency installation requires network access.
+For a guided Fedora install and preview, run `./scripts/install-preview.sh`; it asks before installing system packages and keeps the desktop build in your home directory. On other distributions, first install the [build requirements](docs/INSTALLATION.md), then run `./scripts/install-preview.sh --skip-dependencies` (or use the commands above). The included dependency helpers use `dnf` and are only for Fedora. The build itself installs private libraries, the host, SDK, bundled modules, and manager. It never overwrites `/usr/bin/xfdesktop`, modifies autostart, or changes the active desktop service. Source archives are bundled under `upstream/`; installing system dependencies requires your distribution's package manager and network access.
 
 Close the preview before rebuilding/installing its prefix. A build lock prevents this installer from overwriting an active preview. To build just the existing modules:
 
