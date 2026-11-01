@@ -179,7 +179,7 @@ static void ring(cairo_t*cr,double cx,double cy,double radius,double percent,Gdk
 }
 static void monitor_draw(GtkWidget*view,cairo_t*cr) {
     Widget*w=g_object_get_data(G_OBJECT(view),WIDGET_ID);if(!w||(widget_hidden(w)&&!w->preview))return;
-    GdkRectangle r=rect(w);GdkRGBA ink;gboolean custom;render_background(w,gtk_widget_get_style_context(view),cr,r,&ink,&custom);if(!custom)gtk_style_context_get_color(gtk_widget_get_style_context(view),GTK_STATE_FLAG_NORMAL,&ink);
+    GdkRectangle r=rect(w);widget_layout_register(w,r);GdkRGBA ink;gboolean custom;render_background(w,gtk_widget_get_style_context(view),cr,r,&ink,&custom);if(!custom)gtk_style_context_get_color(gtk_widget_get_style_context(view),GTK_STATE_FLAG_NORMAL,&ink);
     cairo_save(cr);cairo_rectangle(cr,r.x+6,r.y+6,MAX(0,r.width-12),MAX(0,r.height-12));cairo_clip(cr);
     GdkRGBA muted=ink;muted.alpha*=.72;const char*kind=MONITOR_KIND;int compact=r.width<300||r.height<230;double top=r.y+34;int text_width=r.width-24;draw_title(view,cr,r,ink);
     if(!strcmp(kind,"cpu")){

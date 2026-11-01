@@ -1,5 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Shared by native card modules; no host changes or managed overlay windows. */
+static void widget_layout_id(Widget*w,char out[512]){g_snprintf(out,512,"%s:%s",WIDGET_ID,w->key?w->key:"");}
+static void widget_layout_register(Widget*w,GdkRectangle r){char id[512];widget_layout_id(w,id);xt_layout_register(w->view,id,r);}
+static void widget_layout_unregister(Widget*w){char id[512];widget_layout_id(w,id);xt_layout_unregister(w->view,id);}
+static void widget_layout_snap(Widget*w,GtkWidget*view,int*x,int*y,int width,int height){char id[512];widget_layout_id(w,id);xt_layout_snap(view,id,x,y,width,height,host->settings());}
 static gboolean widget_hidden(Widget*w){
     if(w->drop_target)return TRUE;
     if(!w->hidden)return FALSE;
@@ -40,6 +44,7 @@ static void widget_drag_preview(Widget*w,double root_x,double root_y){
         w->drop_target=target;target->preview=w;
         target->preview_x=(int)(root_x-ox-(w->start_x-w->original_x));
         target->preview_y=(int)(root_y-oy-(w->start_y-w->original_y));
+        widget_layout_snap(w,target->view,&target->preview_x,&target->preview_y,w->original_width,w->original_height);
     }
     for(GList*l=views;l;l=l->next)gtk_widget_queue_draw(((Widget*)l->data)->view);
 }
@@ -49,6 +54,7 @@ static gboolean widget_finish_transfer(Widget*w){
     target->x=r.x;target->y=r.y;target->width=w->original_width;target->height=w->original_height;
     target->positioned=TRUE;target->hidden=FALSE;
     w->x=w->original_x;w->y=w->original_y;w->positioned=TRUE;w->hidden=TRUE;
+    widget_layout_unregister(w);
     widget_clear_transfer(w);widget_save_placement(target);widget_save_placement(w);
     return TRUE;
 }

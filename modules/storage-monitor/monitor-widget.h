@@ -49,7 +49,7 @@ static void appearance_changed(XfconfChannel*c,const char*property,const GValue*
                 const char*suffix=property+strlen(w->key);
                 if(!strcmp(suffix,"/x")){w->x=xfconf_channel_get_int(c,property,0);w->positioned=TRUE;}
                 else if(!strcmp(suffix,"/y"))w->y=xfconf_channel_get_int(c,property,0);
-                else if(!strcmp(suffix,"/hidden"))w->hidden=xfconf_channel_get_bool(c,property,FALSE);
+                else if(!strcmp(suffix,"/hidden")){w->hidden=xfconf_channel_get_bool(c,property,FALSE);if(w->hidden)widget_layout_unregister(w);}
                 else if(!strcmp(suffix,"/width"))w->width=xfconf_channel_get_int(c,property,0);
                 else if(!strcmp(suffix,"/height"))w->height=xfconf_channel_get_int(c,property,0);
                 gtk_widget_queue_draw(w->view);
@@ -129,7 +129,7 @@ static gboolean motion(GtkWidget*view,GdkEventMotion*e) {
     }
     if(fabs(e->x-w->start_x)+fabs(e->y-w->start_y)>5) {
         w->moved=TRUE;widget_drag_preview(w,e->x_root,e->y_root);w->positioned=TRUE;w->x=w->original_x+e->x-w->start_x;w->y=w->original_y+e->y-w->start_y;
-        GdkRectangle r=rect(w);w->x=r.x;w->y=r.y;gtk_widget_queue_draw(view);
+        GdkRectangle r=rect(w);w->x=r.x;w->y=r.y;widget_layout_snap(w,view,&w->x,&w->y,r.width,r.height);r=rect(w);w->x=r.x;w->y=r.y;widget_layout_register(w,r);gtk_widget_queue_draw(view);
     }
     return TRUE;
 }
@@ -167,7 +167,7 @@ static gboolean leave_cb(GtkWidget*v,GdkEventCrossing*e,gpointer data){Widget*w=
 static gboolean motion_cb(GtkWidget*v,GdkEventMotion*e,gpointer data){return motion(v,e);}
 static gboolean widget_surface(GtkWidget*view,double x,double y,gpointer data){Widget*w=data;return !widget_hidden(w)&&inside(rect(w),x,y);}
 static void free_widget(gpointer data) {
-    Widget*w=data;widget_clear_transfer(w);xt_surface_unregister(w->view,WIDGET_ID);if(w->drag && gtk_widget_has_grab(w->view))gtk_grab_remove(w->view);
+    Widget*w=data;widget_layout_unregister(w);widget_clear_transfer(w);xt_surface_unregister(w->view,WIDGET_ID);if(w->drag && gtk_widget_has_grab(w->view))gtk_grab_remove(w->view);
     resize_cursor(w,FALSE);
     if(w->fade_source)g_source_remove(w->fade_source);
     if(w->controls){g_subprocess_force_exit(w->controls);g_clear_object(&w->controls);}

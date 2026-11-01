@@ -99,18 +99,51 @@ static void detach_desktop(GtkWidget *desktop) {
     stop_if_unused();
 }
 static void reveal(GtkMenuItem *item,gpointer unused) {if(watch)set_hidden(!hidden);}
+static void menu_data_free(gpointer data,GClosure *closure){g_free(data);}
+static void menu_bool_changed(GtkCheckMenuItem *item,gpointer data){
+    const char *key=data;xfconf_channel_set_bool(host->settings(),key,gtk_check_menu_item_get_active(item));
+}
+static GtkWidget *menu_toggle(GtkWidget *menu,const char *label,const char *key,gboolean fallback){
+    GtkWidget *item=gtk_check_menu_item_new_with_label(label);
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item),xfconf_channel_get_bool(host->settings(),key,fallback));
+    g_signal_connect_data(item,"toggled",G_CALLBACK(menu_bool_changed),g_strdup(key),menu_data_free,0);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu),item);return item;
+}
+static void menu_int_changed(GtkCheckMenuItem *item,gpointer data){
+    if(!gtk_check_menu_item_get_active(item))return;
+    xfconf_channel_set_int(host->settings(),(const char*)g_object_get_data(G_OBJECT(item),"setting-key"),GPOINTER_TO_INT(data));
+}
+static GtkWidget *int_menu(GtkWidget *parent,const char *label,const char *key,const int *values,guint count,int fallback,const char *unit){
+    GtkWidget *item=gtk_menu_item_new_with_label(label),*sub=gtk_menu_new();GSList *group=NULL;
+    int current=xfconf_channel_get_int(host->settings(),key,fallback);
+    for(guint i=0;i<count;i++){
+        char *text=g_strdup_printf("%d %s",values[i],unit);GtkWidget *choice=gtk_radio_menu_item_new_with_label(group,text);g_free(text);
+        group=gtk_radio_menu_item_get_group(GTK_RADIO_MENU_ITEM(choice));g_object_set_data_full(G_OBJECT(choice),"setting-key",g_strdup(key),g_free);
+        gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(choice),values[i]==current);
+        g_signal_connect(choice,"toggled",G_CALLBACK(menu_int_changed),GINT_TO_POINTER(values[i]));gtk_menu_shell_append(GTK_MENU_SHELL(sub),choice);
+    }
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(item),sub);gtk_menu_shell_append(GTK_MENU_SHELL(parent),item);return item;
+}
 static void menu(GtkWidget *source,GtkWidget *root) {
-    if (g_object_get_data(G_OBJECT(root),"desktop-peek-menu")) return;
-    g_object_set_data(G_OBJECT(root),"desktop-peek-menu",GINT_TO_POINTER(1));
-    GtkWidget *parent=gtk_menu_item_new_with_label("Desktop Visibility"),*sub=gtk_menu_new();
+    if (g_object_get_data(G_OBJECT(root),"desktop-management-menu")) return;
+    g_object_set_data(G_OBJECT(root),"desktop-management-menu",GINT_TO_POINTER(1));
+    const char *root_key="/xfce-tweaks/desktop-management/";
+    GtkWidget *parent=gtk_menu_item_new_with_label("Desktop Management"),*sub=gtk_menu_new();
     GtkWidget *toggle=gtk_menu_item_new_with_label(hidden?"Show desktop items":"Hide desktop items");
-    g_signal_connect(toggle,"activate",G_CALLBACK(reveal),NULL);
-    gtk_menu_shell_append(GTK_MENU_SHELL(sub),toggle);gtk_menu_item_set_submenu(GTK_MENU_ITEM(parent),sub);
-    gtk_menu_shell_append(GTK_MENU_SHELL(root),parent);gtk_widget_show_all(parent);
+    g_signal_connect(toggle,"activate",G_CALLBACK(reveal),NULL);gtk_menu_shell_append(GTK_MENU_SHELL(sub),toggle);
+    gtk_menu_shell_append(GTK_MENU_SHELL(sub),gtk_separator_menu_item_new());
+    char *key=g_strconcat(root_key,"snap-enabled",NULL);menu_toggle(sub,"Snap while dragging",key,TRUE);g_free(key);
+    key=g_strconcat(root_key,"snap-to-objects",NULL);menu_toggle(sub,"Align with groups and widgets",key,TRUE);g_free(key);
+    key=g_strconcat(root_key,"snap-to-screen",NULL);menu_toggle(sub,"Snap to display edges",key,TRUE);g_free(key);
+    key=g_strconcat(root_key,"snap-to-grid",NULL);menu_toggle(sub,"Snap to grid",key,FALSE);g_free(key);
+    const int grids[]={8,16,24,32},distances[]={8,12,16,24};
+    key=g_strconcat(root_key,"grid-size",NULL);int_menu(sub,"Grid spacing",key,grids,G_N_ELEMENTS(grids),16,"px");g_free(key);
+    key=g_strconcat(root_key,"snap-distance",NULL);int_menu(sub,"Snap distance",key,distances,G_N_ELEMENTS(distances),16,"px");g_free(key);
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(parent),sub);gtk_menu_shell_append(GTK_MENU_SHELL(root),parent);gtk_widget_show_all(parent);
 }
 static void view_menu(GtkWidget *view,GtkWidget *root,int x,int y) {menu(view,root);}
 static const XtTweak tweak={.abi_version=XT_ABI_VERSION,.struct_size=sizeof(XtTweak),
-    .id="desktop-peek",.name="Desktop Visibility",.attach_view=attach_view,.detach_view=detach_view,
+    .id="desktop-peek",.name="Desktop Management",.attach_view=attach_view,.detach_view=detach_view,
     .attach_desktop=attach_desktop,.detach_desktop=detach_desktop,.button_press=view_press,
     .desktop_menu=menu,.view_menu=view_menu};
 G_MODULE_EXPORT const XtTweak *xfce_tweak_query(const XtHost *api) {

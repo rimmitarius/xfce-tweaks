@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #define _GNU_SOURCE
+#define WIDGET_ID "victus-control"
 #include "xfce-tweaks.h"
 #include "widget-layout.h"
 #include <dlfcn.h>
@@ -182,7 +183,7 @@ static void battery_icon(cairo_t*cr,double x,double y,int level,GdkRGBA ink,GdkR
 }
 static void draw(GtkWidget*view,cairo_t*cr) {
     Widget*w=g_object_get_data(G_OBJECT(view),"victus-control");if(!w || (widget_hidden(w)&&!w->preview))return;
-    GdkRectangle r=rect(w);GtkStyleContext*style=gtk_widget_get_style_context(view);GdkRGBA ink,accent;gboolean custom;
+    GdkRectangle r=rect(w);widget_layout_register(w,r);GtkStyleContext*style=gtk_widget_get_style_context(view);GdkRGBA ink,accent;gboolean custom;
     render_background(w,style,cr,r,&ink,&custom);if(!custom)gtk_style_context_get_color(style,GTK_STATE_FLAG_NORMAL,&ink);
     if(!gtk_style_context_lookup_color(style,"theme_selected_bg_color",&accent))gdk_rgba_parse(&accent,"#3584e4");
     GdkRGBA muted=ink;muted.alpha=.65;
@@ -264,7 +265,7 @@ static gboolean motion(GtkWidget*view,GdkEventMotion*e) {
     }
     if(fabs(e->x-w->start_x)+fabs(e->y-w->start_y)>5) {
         w->moved=TRUE;widget_drag_preview(w,e->x_root,e->y_root);w->positioned=TRUE;w->x=w->original_x+e->x-w->start_x;w->y=w->original_y+e->y-w->start_y;
-        GdkRectangle r=rect(w);w->x=r.x;w->y=r.y;gtk_widget_queue_draw(view);
+        GdkRectangle r=rect(w);w->x=r.x;w->y=r.y;widget_layout_snap(w,view,&w->x,&w->y,r.width,r.height);r=rect(w);w->x=r.x;w->y=r.y;widget_layout_register(w,r);gtk_widget_queue_draw(view);
     }
     return TRUE;
 }
@@ -302,7 +303,7 @@ static gboolean leave_cb(GtkWidget*v,GdkEventCrossing*e,gpointer data){Widget*w=
 static gboolean motion_cb(GtkWidget*v,GdkEventMotion*e,gpointer data){return motion(v,e);}
 static gboolean widget_surface(GtkWidget*view,double x,double y,gpointer data){Widget*w=data;return !widget_hidden(w)&&inside(rect(w),x,y);}
 static void free_widget(gpointer data) {
-    Widget*w=data;widget_clear_transfer(w);xt_surface_unregister(w->view,"victus-control");if(w->drag && gtk_widget_has_grab(w->view))gtk_grab_remove(w->view);
+    Widget*w=data;widget_layout_unregister(w);widget_clear_transfer(w);xt_surface_unregister(w->view,"victus-control");if(w->drag && gtk_widget_has_grab(w->view))gtk_grab_remove(w->view);
     resize_cursor(w,FALSE);
     if(w->fade_source)g_source_remove(w->fade_source);
     if(w->controls){g_subprocess_force_exit(w->controls);g_clear_object(&w->controls);}

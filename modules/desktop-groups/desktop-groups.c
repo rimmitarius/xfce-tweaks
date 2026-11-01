@@ -589,6 +589,9 @@ static void dg_draw(XfdesktopIconView *icon_view, cairo_t *cr) {
     if (g_strcmp0(v->monitor, g->monitor))
       continue;
     GdkRectangle r = dg_rect(v, g);
+    char *layout_id=g_strconcat("desktop-groups:",g->id,NULL);
+    xt_layout_register(GTK_WIDGET(v->view),layout_id,r);
+    g_free(layout_id);
     GdkRGBA color;
     if (!gdk_rgba_parse(&color, g->color))
       gdk_rgba_parse(&color, "#202630");
@@ -741,6 +744,10 @@ static gboolean dg_scroll(GtkWidget *widget, GdkEventScroll *event,
 static void dg_free(gpointer data) {
   DgView *v = data;
   if (!v->retired) {
+    for(guint i=0;dg_store && i<dg_store->groups->len;i++){
+      DgGroup *g=g_ptr_array_index(dg_store->groups,i);
+      if(!g_strcmp0(g->monitor,v->monitor)){char *id=g_strconcat("desktop-groups:",g->id,NULL);xt_layout_unregister(GTK_WIDGET(v->view),id);g_free(id);}
+    }
     xt_surface_unregister(GTK_WIDGET(v->view), "desktop-groups");
     dg_end_drag(v);
     xt_icon_opacity_clear(GTK_WIDGET(v->view), "desktop-groups");
@@ -1214,6 +1221,9 @@ static void dg_action(GtkMenuItem *mi, gpointer data) {
       if (other->drag == g)
         dg_end_drag(other);
     }
+    char *layout_id=g_strconcat("desktop-groups:",g->id,NULL);
+    for(GList *l=dg_views;l;l=l->next)xt_layout_unregister(GTK_WIDGET(((DgView*)l->data)->view),layout_id);
+    g_free(layout_id);
     dg_store_remove(dg_store, g);
     break;
   case DG_TRANSFER:
@@ -1379,6 +1389,10 @@ static void dg_drag_to(DgView*v,double root_x,double root_y){
     int ox,oy;gdk_window_get_origin(gtk_widget_get_window(dest->view),&ox,&oy);
     g->x=CLAMP(root_x-ox-(v->pointer_x-v->start_x),0,MAX(0,gtk_widget_get_allocated_width(dest->view)-MIN(g->width,gtk_widget_get_allocated_width(dest->view))));
     g->y=CLAMP(root_y-oy-(v->pointer_y-v->start_y),0,MAX(0,gtk_widget_get_allocated_height(dest->view)-MIN(g->height,gtk_widget_get_allocated_height(dest->view))));
+    char *layout_id=g_strconcat("desktop-groups:",g->id,NULL);
+    int snap_x=(int)round(g->x),snap_y=(int)round(g->y);
+    xt_layout_snap(GTK_WIDGET(dest->view),layout_id,&snap_x,&snap_y,(int)round(g->width),(int)round(g->height),host->settings());
+    g->x=snap_x;g->y=snap_y;g_free(layout_id);
     if(from && from!=dest){dg_hover(from->view,NULL);dg_transfer(from,g,dest->monitor);}
     else if(!from){if(dest!=v)dg_transfer(v,g,dest->monitor);else{g_free(g->monitor);g->monitor=g_strdup(dest->monitor);dg_save();}}
     dg_hover(dest->view,g);

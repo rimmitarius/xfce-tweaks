@@ -3,7 +3,7 @@
 import argparse, sys, subprocess, gi
 gi.require_version('Gtk','3.0'); gi.require_version('Xfconf','0')
 from gi.repository import Gtk, Gdk, Gio, Xfconf
-NAMES={'cpu-monitor':'CPU Monitor','gpu-monitor':'GPU Monitor','memory-monitor':'Memory Monitor','storage-monitor':'Storage Monitor'}
+NAMES={'cpu-monitor':'CPU Monitor','gpu-monitor':'NVIDIA GPU Monitor','memory-monitor':'Memory Monitor','storage-monitor':'Storage Monitor'}
 class Settings(Gtk.Application):
  def __init__(self,ident,monitor):
   super().__init__(application_id='org.xfce.Tweaks.'+ident.replace('-',''),flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE);self.ident=ident;self.prefix='/xfce-tweaks/'+ident;self.monitor=monitor

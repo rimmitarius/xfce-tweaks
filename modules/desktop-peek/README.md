@@ -1,8 +1,8 @@
-# Desktop Visibility
+# Desktop Management
 
 Double-click empty desktop with the left mouse button to hide desktop icons, Groups and native widgets. Double-click again anywhere on the exposed desktop to reveal them. The wallpaper stays visible, including a playing or paused video wallpaper in its current state. Application windows and XFCE panels are unaffected.
 
-Enable **Desktop Visibility** in XFCE Tweaks Manager. The desktop context menu also has a **Desktop Visibility → Show/Hide desktop items** action. Disabling the Tweak restores items immediately. Hidden is temporary: restarting xfdesktop or re-enabling the Tweak always starts with items visible. Coordinates, group membership and files are never changed by this feature.
+Enable **Desktop Management** in XFCE Tweaks Manager. Snapping becomes active while this Tweak is enabled; its settings remain available from the context menu. The desktop context menu has a **Desktop Management** submenu with show/hide, edge and object alignment snapping, configurable grid snapping, grid spacing, and snap distance. Dragged widgets and groups snap to nearby edges and centers across all loaded native modules; monitor boundaries are included. Grid snapping is optional. The same controls apply to desktop widgets and Desktop Groups. Disabling the Tweak restores items immediately. Hidden is temporary: restarting xfdesktop or re-enabling the Tweak always starts with items visible. Coordinates, group membership and files are never changed by this feature.
 
 Double-clicks on files and interactive group/widget surfaces retain their normal actions. Shift/Ctrl/Alt/Super-modified clicks and selection drags do not toggle visibility. The gesture uses GTK's configured double-click timing and distance. It applies to all connected desktop icon views together. Hiding presentation does not disable the modules or stop active hardware controls; their settings windows remain ordinary application windows.
 
