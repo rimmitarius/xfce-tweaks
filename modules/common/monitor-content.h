@@ -171,7 +171,12 @@ static void monitor_shutdown(void) {if(nvml_lib){int(*shutdown)(void)=dlsym(nvml
 static char *fmt_bytes(guint64 n) {static char slots[16][32];static guint at;char*out=slots[(at++)%G_N_ELEMENTS(slots)];const char*units[]={"B","KiB","MiB","GiB","TiB"};double v=n;guint i=0;while(v>=1024&&i<4){v/=1024;i++;}g_snprintf(out,32,i?"%.1f %s":"%.0f %s",v,units[i]);return out;}
 static void line_text(GtkWidget*v,cairo_t*cr,GdkRectangle r,GdkRGBA ink,const char*s,int row,int rows) {int y=r.y+r.height-18-(rows-row)*20;text(v,cr,s,r.x+14,y,r.width-28,.82,FALSE,PANGO_ALIGN_LEFT,ink);}
 static void bar(cairo_t*cr,double x,double y,double width,double height,double percent,GdkRGBA ink) {cairo_set_line_width(cr,height);gdk_cairo_set_source_rgba(cr,&ink);cairo_move_to(cr,x,y);cairo_line_to(cr,x+width,y);cairo_stroke(cr);GdkRGBA a=ink;a.alpha=.85;gdk_cairo_set_source_rgba(cr,&a);cairo_move_to(cr,x,y);cairo_line_to(cr,x+width*CLAMP(percent,0,100)/100.,y);cairo_stroke(cr);}
-static void ring(cairo_t*cr,double cx,double cy,double radius,double percent,GdkRGBA ink) {GdkRGBA track=ink;track.alpha=.18;cairo_set_line_width(cr,7);cairo_set_line_cap(cr,CAIRO_LINE_CAP_ROUND);gdk_cairo_set_source_rgba(cr,&track);cairo_arc(cr,cx,cy,radius,-G_PI*.78,G_PI*.78);cairo_stroke(cr);gdk_cairo_set_source_rgba(cr,&ink);cairo_arc(cr,cx,cy,radius,-G_PI*.78,-G_PI*.78+G_PI*1.56*CLAMP(percent,0,100)/100);cairo_stroke(cr);}
+static void ring(cairo_t*cr,double cx,double cy,double radius,double percent,GdkRGBA ink) {
+    GdkRGBA track=ink;track.alpha=.18;cairo_set_line_width(cr,7);cairo_set_line_cap(cr,CAIRO_LINE_CAP_ROUND);
+    cairo_new_path(cr);gdk_cairo_set_source_rgba(cr,&track);cairo_arc(cr,cx,cy,radius,-G_PI*.78,G_PI*.78);cairo_stroke(cr);
+    cairo_new_path(cr);gdk_cairo_set_source_rgba(cr,&ink);cairo_arc(cr,cx,cy,radius,-G_PI*.78,-G_PI*.78+G_PI*1.56*CLAMP(percent,0,100)/100);cairo_stroke(cr);
+    cairo_new_path(cr);
+}
 static void monitor_draw(GtkWidget*view,cairo_t*cr) {
     Widget*w=g_object_get_data(G_OBJECT(view),WIDGET_ID);if(!w||(widget_hidden(w)&&!w->preview))return;
     GdkRectangle r=rect(w);GdkRGBA ink;gboolean custom;render_background(w,gtk_widget_get_style_context(view),cr,r,&ink,&custom);if(!custom)gtk_style_context_get_color(gtk_widget_get_style_context(view),GTK_STATE_FLAG_NORMAL,&ink);
