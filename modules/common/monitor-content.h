@@ -9,7 +9,17 @@
 #include <unistd.h>
 
 typedef struct { guint64 total, idle; double load; int mhz; } CpuCore;
-typedef struct { gboolean valid; guint gpu, mem; guint64 used, total; guint graphics_mhz, memory_mhz, temp, watts; char name[96]; } NvGpu;
+#define GPU_UTIL_HISTORY 10
+typedef struct {
+    gboolean valid, utilization_valid, effective_valid, power_valid;
+    guint gpu, gpu_raw, effective, mem;
+    guint gpu_history[GPU_UTIL_HISTORY], gpu_history_count, gpu_history_next;
+    guint effective_history[GPU_UTIL_HISTORY], effective_count, effective_next;
+    guint64 used, total;
+    guint graphics_mhz, max_graphics_mhz, memory_mhz, temp;
+    double watts;
+    char name[96];
+} NvGpu;
 typedef struct {
     CpuCore cores[256]; guint core_count; double cpu_load, cpu_mhz, cpu_temp;
     guint64 mem_total, mem_available, swap_total, swap_free;
@@ -22,6 +32,27 @@ static void *nvml_lib;
 static gboolean nvml_ready;
 static void *nvml_device;
 
+static void gpu_record_utilization(NvGpu *gpu, guint value, guint graphics_mhz, guint max_graphics_mhz) {
+    gpu->gpu_raw = MIN(value, 100u);
+    gpu->gpu_history[gpu->gpu_history_next] = gpu->gpu_raw;
+    gpu->gpu_history_next = (gpu->gpu_history_next + 1) % GPU_UTIL_HISTORY;
+    gpu->gpu_history_count = MIN(gpu->gpu_history_count + 1, GPU_UTIL_HISTORY);
+    guint sum = 0;
+    for (guint i = 0; i < gpu->gpu_history_count; i++) sum += gpu->gpu_history[i];
+    gpu->gpu = (sum + gpu->gpu_history_count / 2) / gpu->gpu_history_count;
+    gpu->utilization_valid = TRUE;
+    gpu->effective_valid = max_graphics_mhz > 0;
+    if (gpu->effective_valid) {
+        guint sample = MIN(100u, (guint)round((double)gpu->gpu_raw * graphics_mhz / max_graphics_mhz));
+        gpu->effective_history[gpu->effective_next] = sample;
+        gpu->effective_next = (gpu->effective_next + 1) % GPU_UTIL_HISTORY;
+        gpu->effective_count = MIN(gpu->effective_count + 1, GPU_UTIL_HISTORY);
+        sum = 0;
+        for (guint i = 0; i < gpu->effective_count; i++) sum += gpu->effective_history[i];
+        gpu->effective = (sum + gpu->effective_count / 2) / gpu->effective_count;
+    }
+}
+
 typedef struct { unsigned int gpu, memory; } NvUtil;
 typedef struct { uint64_t total, free, used; } NvMemory;
 static char *mopt(const char *name, const char *fallback) {
@@ -31,7 +62,7 @@ static char *mopt(const char *name, const char *fallback) {
 }
 static char *aopt(const char *name,const char *fallback){char*key=g_strconcat(PREFIX "/appearance/",name,NULL);char*value=xfconf_channel_get_string(host->settings(),key,fallback);g_free(key);return value;}
 static gboolean abool(const char*name,gboolean fallback){char*key=g_strconcat(PREFIX "/appearance/",name,NULL);gboolean value=xfconf_channel_get_bool(host->settings(),key,fallback);g_free(key);return value;}
-static char *default_title(void){if(!strcmp(MONITOR_KIND,"cpu"))return g_strdup("CPU Monitor");if(!strcmp(MONITOR_KIND,"gpu"))return g_strdup("GPU Monitor");if(!strcmp(MONITOR_KIND,"memory"))return g_strdup("Memory Monitor");return g_strdup("Storage Monitor");}
+static char *default_title(void){if(!strcmp(MONITOR_KIND,"cpu"))return g_strdup("CPU Monitor");if(!strcmp(MONITOR_KIND,"gpu"))return g_strdup("NVIDIA GPU Monitor");if(!strcmp(MONITOR_KIND,"memory"))return g_strdup("Memory Monitor");return g_strdup("Storage Monitor");}
 static void draw_title(GtkWidget*v,cairo_t*cr,GdkRectangle r,GdkRGBA ink){if(!abool("title-visible",TRUE))return;char*base=default_title(),*title=aopt("title",base);g_free(base);char*align=aopt("title-alignment","center");PangoAlignment a=!strcmp(align,"left")?PANGO_ALIGN_LEFT:!strcmp(align,"right")?PANGO_ALIGN_RIGHT:PANGO_ALIGN_CENTER;double y=abool("title-bottom",FALSE)?r.y+r.height-26:r.y+10;text(v,cr,title,r.x+12,y,r.width-24,.95,TRUE,a,ink);g_free(align);g_free(title);}
 static gboolean mread_u64(const char *path, guint64 *out) {
     char *data = NULL; gsize len = 0;
@@ -84,13 +115,14 @@ static void init_nvml(void) {
     if(!init||!count||!handle||init()!=0)return;unsigned int n=0;if(count(&n)==0&&n)handle(0,&nvml_device);
 }
 static void sample_nvidia(void) {
-    init_nvml();mon.nvidia.valid=FALSE;if(!nvml_device)return;
-    int(*util)(void*,NvUtil*)=dlsym(nvml_lib,"nvmlDeviceGetUtilizationRates");int(*memory)(void*,NvMemory*)=dlsym(nvml_lib,"nvmlDeviceGetMemoryInfo");int(*clock)(void*,int,unsigned int*)=dlsym(nvml_lib,"nvmlDeviceGetClockInfo");int(*temp)(void*,int,unsigned int*)=dlsym(nvml_lib,"nvmlDeviceGetTemperature");int(*power)(void*,unsigned int*)=dlsym(nvml_lib,"nvmlDeviceGetPowerUsage");int(*name)(void*,char*,unsigned int)=dlsym(nvml_lib,"nvmlDeviceGetName");
-    NvUtil u={0};NvMemory m={0};unsigned int graphics=0,memclock=0,t=0,p=0;gboolean got=FALSE;
-    if(util&&util(nvml_device,&u)==0){mon.nvidia.gpu=u.gpu;mon.nvidia.mem=u.memory;got=TRUE;}
+    init_nvml();mon.nvidia.valid=FALSE;mon.nvidia.utilization_valid=FALSE;mon.nvidia.effective_valid=FALSE;mon.nvidia.power_valid=FALSE;if(!nvml_device)return;
+    int(*util)(void*,NvUtil*)=dlsym(nvml_lib,"nvmlDeviceGetUtilizationRates");int(*memory)(void*,NvMemory*)=dlsym(nvml_lib,"nvmlDeviceGetMemoryInfo");int(*clock)(void*,int,unsigned int*)=dlsym(nvml_lib,"nvmlDeviceGetClockInfo");int(*max_clock)(void*,int,unsigned int*)=dlsym(nvml_lib,"nvmlDeviceGetMaxClockInfo");int(*temp)(void*,int,unsigned int*)=dlsym(nvml_lib,"nvmlDeviceGetTemperature");int(*power)(void*,unsigned int*)=dlsym(nvml_lib,"nvmlDeviceGetPowerUsage");int(*name)(void*,char*,unsigned int)=dlsym(nvml_lib,"nvmlDeviceGetName");
+    NvUtil u={0};NvMemory m={0};unsigned int graphics=0,max_graphics=0,memclock=0,t=0,p=0;gboolean got=FALSE;
+    if(clock)clock(nvml_device,0,&graphics);if(max_clock)max_clock(nvml_device,0,&max_graphics);if(clock)clock(nvml_device,2,&memclock);
+    if(util&&util(nvml_device,&u)==0){gpu_record_utilization(&mon.nvidia,u.gpu,graphics,max_graphics);mon.nvidia.mem=u.memory;got=TRUE;}
     if(memory&&memory(nvml_device,&m)==0){mon.nvidia.total=m.total;mon.nvidia.used=m.used;got=TRUE;}
-    if(clock)clock(nvml_device,0,&graphics);if(clock)clock(nvml_device,2,&memclock);if(temp)temp(nvml_device,0,&t);if(power&&power(nvml_device,&p)==0)mon.nvidia.watts=p/1000;
-    if(name)name(nvml_device,mon.nvidia.name,sizeof(mon.nvidia.name));mon.nvidia.graphics_mhz=graphics;mon.nvidia.memory_mhz=memclock;mon.nvidia.temp=t;mon.nvidia.valid=got;
+    if(temp)temp(nvml_device,0,&t);if(power&&power(nvml_device,&p)==0){mon.nvidia.watts=p/1000.0;mon.nvidia.power_valid=TRUE;}
+    if(name)name(nvml_device,mon.nvidia.name,sizeof(mon.nvidia.name));mon.nvidia.graphics_mhz=graphics;mon.nvidia.max_graphics_mhz=max_graphics;mon.nvidia.memory_mhz=memclock;mon.nvidia.temp=t;mon.nvidia.valid=got;
 }
 static void sample_intel_gpu(void) {
     mon.intel_load=-1;mon.intel_mhz=0;mon.intel_temp=0;GDir*d=g_dir_open("/sys/class/drm",0,NULL);if(!d)return;const char*n;
@@ -155,13 +187,23 @@ static void monitor_draw(GtkWidget*view,cairo_t*cr) {
     }else if(!strcmp(kind,"gpu")){
         char*selector=mopt("gpu","all");gboolean show_nv=strcmp(selector,"intel")!=0,show_intel=strcmp(selector,"nvidia")!=0;g_free(selector);
         if(compact){
-            if(show_nv&&mon.nvidia.valid){text(view,cr,mon.nvidia.name,r.x+12,r.y+34,text_width,.7,FALSE,PANGO_ALIGN_CENTER,muted);char*usage=g_strdup_printf("GPU %u%%",mon.nvidia.gpu);text(view,cr,usage,r.x+12,r.y+53,text_width,1.2,TRUE,PANGO_ALIGN_CENTER,ink);g_free(usage);char*memory=g_strdup_printf("VRAM %s / %s",fmt_bytes(mon.nvidia.used),fmt_bytes(mon.nvidia.total));text(view,cr,memory,r.x+12,r.y+82,text_width,.78,FALSE,PANGO_ALIGN_CENTER,ink);g_free(memory);char*temp=mon.nvidia.temp?g_strdup_printf("GPU temperature  %u°C",mon.nvidia.temp):g_strdup("GPU temperature unavailable");text(view,cr,temp,r.x+12,r.y+101,text_width,.72,FALSE,PANGO_ALIGN_CENTER,muted);g_free(temp);}
-            else if(show_intel){text(view,cr,"Intel Integrated GPU",r.x+12,r.y+38,text_width,.85,TRUE,PANGO_ALIGN_CENTER,ink);char*freq=mon.intel_mhz?g_strdup_printf("GT clock %d MHz  ·  GPU usage %s",mon.intel_mhz,mon.intel_load>=0?"available":"unavailable"):g_strdup("Intel GPU telemetry unavailable");text(view,cr,freq,r.x+12,r.y+66,text_width,.78,FALSE,PANGO_ALIGN_CENTER,muted);g_free(freq);char*temp=mon.intel_temp?g_strdup_printf("GPU temperature  %d°C",mon.intel_temp):g_strdup("GPU temperature unavailable");text(view,cr,temp,r.x+12,r.y+84,text_width,.72,FALSE,PANGO_ALIGN_CENTER,muted);g_free(temp);}
+            if(show_nv&&mon.nvidia.valid){
+                char*main=mon.nvidia.effective_valid?g_strdup_printf("Estimated load  %u%%",mon.nvidia.effective):g_strdup("Estimated load unavailable");text(view,cr,main,r.x+12,r.y+37,text_width,1.05,TRUE,PANGO_ALIGN_CENTER,ink);g_free(main);
+                char*engine=mon.nvidia.utilization_valid?g_strdup_printf("Engine active  %u%%  ·  10s avg",mon.nvidia.gpu):g_strdup("Engine activity unavailable");text(view,cr,engine,r.x+12,r.y+57,text_width,.73,FALSE,PANGO_ALIGN_CENTER,muted);g_free(engine);
+                char*power=mon.nvidia.power_valid?g_strdup_printf("Power %.1f W  ·  Core %u/%u MHz",mon.nvidia.watts,mon.nvidia.graphics_mhz,mon.nvidia.max_graphics_mhz):g_strdup_printf("Power n/a  ·  Core %u/%u MHz",mon.nvidia.graphics_mhz,mon.nvidia.max_graphics_mhz);text(view,cr,power,r.x+12,r.y+77,text_width,.73,FALSE,PANGO_ALIGN_CENTER,ink);g_free(power);
+                char*detail=mon.nvidia.temp?g_strdup_printf("VRAM %s/%s  ·  %u°C",fmt_bytes(mon.nvidia.used),fmt_bytes(mon.nvidia.total),mon.nvidia.temp):g_strdup_printf("VRAM %s/%s  ·  temp n/a",fmt_bytes(mon.nvidia.used),fmt_bytes(mon.nvidia.total));text(view,cr,detail,r.x+12,r.y+97,text_width,.65,FALSE,PANGO_ALIGN_CENTER,muted);g_free(detail);
+            }else if(show_intel){text(view,cr,"Intel Integrated GPU",r.x+12,r.y+38,text_width,.85,TRUE,PANGO_ALIGN_CENTER,ink);char*freq=mon.intel_mhz?g_strdup_printf("GT clock %d MHz  ·  GPU usage %s",mon.intel_mhz,mon.intel_load>=0?"available":"unavailable"):g_strdup("Intel GPU telemetry unavailable");text(view,cr,freq,r.x+12,r.y+66,text_width,.78,FALSE,PANGO_ALIGN_CENTER,muted);g_free(freq);char*temp=mon.intel_temp?g_strdup_printf("GPU temperature  %d°C",mon.intel_temp):g_strdup("GPU temperature unavailable");text(view,cr,temp,r.x+12,r.y+84,text_width,.72,FALSE,PANGO_ALIGN_CENTER,muted);g_free(temp);}
         }else{
-            if(show_nv&&mon.nvidia.valid){char*name=g_strdup(mon.nvidia.name);text(view,cr,name,r.x+12,r.y+34,text_width,.78,FALSE,PANGO_ALIGN_CENTER,muted);g_free(name);char*usage=g_strdup_printf("%u%%",mon.nvidia.gpu);ring(cr,r.x+r.width/2.,r.y+80,39,mon.nvidia.gpu,ink);text(view,cr,usage,r.x+r.width/2.-40,r.y+68,80,1.2,TRUE,PANGO_ALIGN_CENTER,ink);g_free(usage);
-                char*a=g_strdup_printf("VRAM  %s / %s  (%u%%)",fmt_bytes(mon.nvidia.used),fmt_bytes(mon.nvidia.total),mon.nvidia.total?(guint)(100.*mon.nvidia.used/mon.nvidia.total):0);text(view,cr,a,r.x+12,r.y+130,text_width,.82,FALSE,PANGO_ALIGN_CENTER,ink);g_free(a);
-                char*b=g_strdup_printf("Core %u MHz  ·  Memory %u MHz",mon.nvidia.graphics_mhz,mon.nvidia.memory_mhz);text(view,cr,b,r.x+12,r.y+154,text_width,.78,FALSE,PANGO_ALIGN_CENTER,muted);g_free(b);
-                char*c=mon.nvidia.temp?g_strdup_printf("GPU %u°C  ·  %u W  ·  VRAM load %u%%",mon.nvidia.temp,mon.nvidia.watts,mon.nvidia.mem):g_strdup_printf("GPU temp unavailable  ·  %u W  ·  VRAM load %u%%",mon.nvidia.watts,mon.nvidia.mem);text(view,cr,c,r.x+12,r.y+177,text_width,.78,FALSE,PANGO_ALIGN_CENTER,muted);g_free(c);
+            if(show_nv&&mon.nvidia.valid){
+                char*name=g_strdup(mon.nvidia.name);text(view,cr,name,r.x+12,r.y+34,text_width,.78,FALSE,PANGO_ALIGN_CENTER,muted);g_free(name);
+                guint score=mon.nvidia.effective_valid?mon.nvidia.effective:0;ring(cr,r.x+r.width/2.,r.y+81,39,score,ink);
+                char*main=mon.nvidia.effective_valid?g_strdup_printf("%u%%",score):g_strdup("—");text(view,cr,main,r.x+r.width/2.-40,r.y+68,80,1.2,TRUE,PANGO_ALIGN_CENTER,ink);g_free(main);
+                text(view,cr,"Estimated load",r.x+12,r.y+121,text_width,.7,FALSE,PANGO_ALIGN_CENTER,muted);
+                char*a=g_strdup_printf("Engine active  %u%%  (10-second average)",mon.nvidia.gpu);text(view,cr,a,r.x+12,r.y+145,text_width,.82,FALSE,PANGO_ALIGN_CENTER,ink);g_free(a);
+                char*b=mon.nvidia.power_valid?g_strdup_printf("Power draw  %.1f W",mon.nvidia.watts):g_strdup("Power draw unavailable");text(view,cr,b,r.x+12,r.y+169,text_width,.82,FALSE,PANGO_ALIGN_CENTER,ink);g_free(b);
+                char*c=g_strdup_printf("Core clock  %u / %u MHz  ·  Memory %u MHz",mon.nvidia.graphics_mhz,mon.nvidia.max_graphics_mhz,mon.nvidia.memory_mhz);text(view,cr,c,r.x+12,r.y+193,text_width,.76,FALSE,PANGO_ALIGN_CENTER,muted);g_free(c);
+                char*d=g_strdup_printf("VRAM  %s / %s  (%u%%)",fmt_bytes(mon.nvidia.used),fmt_bytes(mon.nvidia.total),mon.nvidia.total?(guint)(100.*mon.nvidia.used/mon.nvidia.total):0);text(view,cr,d,r.x+12,r.y+217,text_width,.78,FALSE,PANGO_ALIGN_CENTER,ink);g_free(d);
+                char*e=mon.nvidia.temp?g_strdup_printf("Temperature  %u°C",mon.nvidia.temp):g_strdup("Temperature unavailable");text(view,cr,e,r.x+12,r.y+241,text_width,.78,FALSE,PANGO_ALIGN_CENTER,muted);g_free(e);
             }else if(show_nv){text(view,cr,"NVIDIA telemetry unavailable",r.x+12,top,text_width,.9,TRUE,PANGO_ALIGN_CENTER,muted);}
             if(show_intel){double iy=show_nv&&mon.nvidia.valid?r.y+r.height-64:top;text(view,cr,"Intel Integrated GPU",r.x+12,iy,text_width,.85,TRUE,PANGO_ALIGN_CENTER,ink);char*freq=mon.intel_mhz?g_strdup_printf("GT clock %d MHz  ·  GPU usage %s  ·  shared memory",mon.intel_mhz,mon.intel_load>=0?"available":"unavailable"):g_strdup("Intel GPU telemetry unavailable");text(view,cr,freq,r.x+12,iy+20,text_width,.75,FALSE,PANGO_ALIGN_CENTER,muted);g_free(freq);char*temp=mon.intel_temp?g_strdup_printf("GPU temperature %d°C",mon.intel_temp):g_strdup("GPU temperature unavailable");text(view,cr,temp,r.x+12,iy+38,text_width,.72,FALSE,PANGO_ALIGN_CENTER,muted);g_free(temp);}
         }
