@@ -166,7 +166,7 @@ static void monitor_update(void) {
     else if(!strcmp(MONITOR_KIND,"memory"))sample_memory();
     else if(!strcmp(MONITOR_KIND,"storage")){sample_disk();sample_storage();}
 }
-static gboolean refresh(gpointer unused) {monitor_update();for(GList*l=views;l;l=l->next)gtk_widget_queue_draw(((Widget*)l->data)->view);return G_SOURCE_CONTINUE;}
+static gboolean refresh(gpointer unused) {monitor_update();for(GList*l=views;l;l=l->next)queue_monitor_widget_draw(l->data);return G_SOURCE_CONTINUE;}
 static void monitor_shutdown(void) {if(nvml_lib){int(*shutdown)(void)=dlsym(nvml_lib,"nvmlShutdown");if(shutdown)shutdown();dlclose(nvml_lib);}nvml_lib=NULL;nvml_device=NULL;nvml_ready=FALSE;memset(&mon,0,sizeof(mon));}
 static char *fmt_bytes(guint64 n) {static char slots[16][32];static guint at;char*out=slots[(at++)%G_N_ELEMENTS(slots)];const char*units[]={"B","KiB","MiB","GiB","TiB"};double v=n;guint i=0;while(v>=1024&&i<4){v/=1024;i++;}g_snprintf(out,32,i?"%.1f %s":"%.0f %s",v,units[i]);return out;}
 static void line_text(GtkWidget*v,cairo_t*cr,GdkRectangle r,GdkRGBA ink,const char*s,int row,int rows) {int y=r.y+r.height-18-(rows-row)*20;text(v,cr,s,r.x+14,y,r.width-28,.82,FALSE,PANGO_ALIGN_LEFT,ink);}
